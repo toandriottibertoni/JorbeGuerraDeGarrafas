@@ -7,7 +7,7 @@
  */
 
 /** Versao do protocolo/motor. Cliente com versao diferente e recusado no handshake. */
-export const ENGINE_VERSION = 5;
+export const ENGINE_VERSION = 6;
 
 /** Passo fixo da simulacao, em segundos. Nunca use delta de frame real na fisica. */
 export const TICK_RATE = 60;
@@ -75,7 +75,18 @@ export const FALL_DAMAGE_PER_SPEED = 0.09;
 export const MIN_POWER = 5;
 export const MAX_POWER = 100;
 /** Velocidade inicial do projetil com forca 100. */
-export const POWER_TO_SPEED = 7.2;
+export const POWER_TO_SPEED = 9.6;
+
+/**
+ * Engradados de paraquedas: caem entre rodadas, somem se ninguem pegar ate
+ * o fim do proximo preparo. 0 a 2 por intervalo, metade vida metade municao.
+ */
+export const CRATE_MIN_PER_INTERVAL = 0;
+export const CRATE_MAX_PER_INTERVAL = 2;
+export const CRATE_HEAL_AMOUNT = 30;
+export const CRATE_AMMO_REFILL = 2;
+/** Raio de coleta, em pixels, a partir do centro do Jorbe. */
+export const CRATE_PICKUP_RADIUS = 26;
 
 /** Chaves usadas nos cookies de sessao. */
 export const ACCESS_COOKIE = 'jb_access';

@@ -173,6 +173,12 @@ export function sfxRoundStart(): void {
   [440, 550, 660].forEach((f, i) => tone({ freqFrom: f, duration: 0.12, type: 'triangle', gain: 0.14, delay: i * 0.09 }));
 }
 
+/** Coletou um engradado — arpejo animado ascendente, tom diferente por tipo. */
+export function sfxPickup(kind: 'health' | 'ammo'): void {
+  const notes = kind === 'health' ? [520, 660, 880] : [440, 660, 990];
+  notes.forEach((f, i) => tone({ freqFrom: f, duration: 0.09, type: 'triangle', gain: 0.16, delay: i * 0.06 }));
+}
+
 export function sfxUiHover(): void {
   tone({ freqFrom: 700, freqTo: 900, duration: 0.04, type: 'sine', gain: 0.05 });
 }
@@ -192,36 +198,53 @@ export function sfxTick(): void {
   tone({ freqFrom: tickToggle ? 1500 : 1150, duration: 0.045, type: 'square', gain: 0.16 });
 }
 
-/** Rajada de vento — toca quando a rodada sorteia um vento novo. Direcao vira pan estereo. */
+/**
+ * Rajada de vento BEM forte — toca quando a rodada sorteia um vento novo.
+ * Direcao vira pan estereo. Duas camadas: uma lufada aguda de ataque rapido
+ * (o "whip" que se ouve na hora) e um sopro grave que sustenta por baixo.
+ */
 export function sfxWindChange(wind: number): void {
   const c = ensureCtx();
   if (!c || !master || muted) return;
   const t0 = now();
+  const pan = c.createStereoPanner ? c.createStereoPanner() : null;
+  if (pan) pan.pan.value = Math.max(-1, Math.min(1, wind / 30));
+  const bus = pan ?? master;
+  if (pan) pan.connect(master);
 
-  const src = c.createBufferSource();
-  src.buffer = noiseBuffer(c, 0.6);
-  const bp = c.createBiquadFilter();
-  bp.type = 'bandpass';
-  bp.Q.value = 0.7;
-  bp.frequency.setValueAtTime(260, t0);
-  bp.frequency.exponentialRampToValueAtTime(820, t0 + 0.35);
-  bp.frequency.exponentialRampToValueAtTime(300, t0 + 0.6);
+  // Camada 1: lufada aguda, ataque quase instantaneo — o "estalo" do vento batendo.
+  const gust = c.createBufferSource();
+  gust.buffer = noiseBuffer(c, 0.5);
+  const gustFilter = c.createBiquadFilter();
+  gustFilter.type = 'bandpass';
+  gustFilter.Q.value = 0.8;
+  gustFilter.frequency.setValueAtTime(400, t0);
+  gustFilter.frequency.exponentialRampToValueAtTime(1400, t0 + 0.15);
+  gustFilter.frequency.exponentialRampToValueAtTime(500, t0 + 0.5);
+  const gustGain = c.createGain();
+  gustGain.gain.setValueAtTime(0.0001, t0);
+  gustGain.gain.exponentialRampToValueAtTime(0.55, t0 + 0.03);
+  gustGain.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.5);
+  gust.connect(gustFilter);
+  gustFilter.connect(gustGain);
+  gustGain.connect(bus);
+  gust.start(t0);
+  gust.stop(t0 + 0.52);
 
-  const gain = c.createGain();
-  gain.gain.setValueAtTime(0.0001, t0);
-  gain.gain.exponentialRampToValueAtTime(0.16, t0 + 0.1);
-  gain.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.6);
-
-  src.connect(bp);
-  if (c.createStereoPanner) {
-    const pan = c.createStereoPanner();
-    pan.pan.value = Math.max(-1, Math.min(1, wind / 30));
-    bp.connect(pan);
-    pan.connect(gain);
-  } else {
-    bp.connect(gain);
-  }
-  gain.connect(master);
-  src.start(t0);
-  src.stop(t0 + 0.62);
+  // Camada 2: sopro grave que sustenta por baixo, dando peso.
+  const low = c.createBufferSource();
+  low.buffer = noiseBuffer(c, 0.9);
+  const lowFilter = c.createBiquadFilter();
+  lowFilter.type = 'lowpass';
+  lowFilter.frequency.setValueAtTime(220, t0);
+  lowFilter.frequency.exponentialRampToValueAtTime(90, t0 + 0.9);
+  const lowGain = c.createGain();
+  lowGain.gain.setValueAtTime(0.0001, t0);
+  lowGain.gain.exponentialRampToValueAtTime(0.4, t0 + 0.12);
+  lowGain.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.9);
+  low.connect(lowFilter);
+  lowFilter.connect(lowGain);
+  lowGain.connect(bus);
+  low.start(t0);
+  low.stop(t0 + 0.92);
 }

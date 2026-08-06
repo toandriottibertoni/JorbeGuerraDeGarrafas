@@ -286,8 +286,10 @@ function renderRoom(): void {
     </div>
     <div class="hint">
       <b>Controles:</b> A/D anda · W/S ajusta o angulo · SHIFT pula ·
-      SEGURE ESPACO para carregar a forca e solte para travar o tiro ·
-      1/2/3 troca a arma · arraste o mouse para olhar o mapa · C volta a camera pro seu Jorbe.
+      SEGURE ESPACO ou clique/arraste do Jorbe (estilo estilingue) pra mirar ·
+      clique na barra de forca ou nas cartas de arma pra ajustar direto ·
+      botao OK trava o tiro · 1/2/3 troca a arma · arraste o mapa (fora do Jorbe)
+      pra olhar em volta · C volta a camera pro seu Jorbe.
       ${isHost ? '' : '<br>Aguardando o dono da sala comecar.'}
     </div>
   `;
@@ -337,6 +339,9 @@ net.socket.on('rooms', (list) => {
 
 net.socket.on('roomState', (state) => {
   room = state;
+  // Sair da sala tambem encerra qualquer partida em andamento — seja saindo
+  // pelo lobby, seja pelo botao "Sair da partida" durante o jogo.
+  if (!state) inMatch = false;
   refreshUi();
 });
 

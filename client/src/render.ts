@@ -262,6 +262,71 @@ export function drawFilmOverlay(ctx: CanvasRenderingContext2D, w: number, h: num
   ctx.globalAlpha = 1;
 }
 
+/**
+ * Indicador de vento grande, no topo-centro — a rajada que decide a partida.
+ * Uma flamula que aponta na direcao do vento, com comprimento proporcional
+ * a forca (relativa a `WIND_MAX`).
+ */
+export function drawWindIndicator(ctx: CanvasRenderingContext2D, viewW: number, wind: number, windMax: number): void {
+  const cx = viewW / 2;
+  const cy = 34;
+  const mag = Math.min(1, Math.abs(wind) / windMax);
+  const dir = wind >= 0 ? 1 : -1;
+  const len = 26 + mag * 90;
+  const calm = mag < 0.04;
+
+  ctx.save();
+  ctx.textAlign = 'center';
+  ctx.font = 'bold 10px Georgia, serif';
+  ctx.fillStyle = 'rgba(244,228,193,0.65)';
+  ctx.fillText('VENTO', cx, cy - 16);
+
+  if (calm) {
+    ctx.strokeStyle = PALETTE.cream;
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(cx - 18, cy);
+    ctx.lineTo(cx + 18, cy);
+    ctx.stroke();
+  } else {
+    const color = mag > 0.7 ? PALETTE.red : PALETTE.crust;
+    const x0 = cx - (dir * len) / 2;
+    const x1 = cx + (dir * len) / 2;
+
+    ctx.strokeStyle = INK;
+    ctx.lineWidth = 7;
+    ctx.beginPath();
+    ctx.moveTo(x0, cy);
+    ctx.lineTo(x1, cy);
+    ctx.stroke();
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 4;
+    ctx.beginPath();
+    ctx.moveTo(x0, cy);
+    ctx.lineTo(x1, cy);
+    ctx.stroke();
+
+    // Ponta de flecha
+    const headSize = 9 + mag * 5;
+    ctx.fillStyle = color;
+    ctx.strokeStyle = INK;
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(x1, cy);
+    ctx.lineTo(x1 - dir * headSize, cy - headSize * 0.7);
+    ctx.lineTo(x1 - dir * headSize, cy + headSize * 0.7);
+    ctx.closePath();
+    ctx.fill();
+    ctx.stroke();
+  }
+
+  ctx.font = 'bold 13px Georgia, serif';
+  ctx.fillStyle = calm ? PALETTE.cream : mag > 0.7 ? PALETTE.red : PALETTE.crust;
+  ctx.fillText(calm ? 'calmo' : `${Math.abs(wind).toFixed(0)}`, cx, cy + 26);
+  ctx.textAlign = 'left';
+  ctx.restore();
+}
+
 // ---------------------------------------------------------------------------
 // Jorbe
 // ---------------------------------------------------------------------------
@@ -299,6 +364,8 @@ export interface JorbeDrawState {
   isSelf: boolean;
   /** Angulo da mira em graus, se deve ser desenhada. */
   aimAngle: number | null;
+  /** 0..1 — estica o braco da mira, feedback visual da forca escolhida. */
+  aimPower: number;
   anim: JorbeAnim;
 }
 
@@ -406,22 +473,24 @@ export function drawJorbe(ctx: CanvasRenderingContext2D, s: JorbeDrawState): voi
 
   ctx.restore();
 
-  // Mira: braco esticado apontando pro angulo escolhido.
+  // Mira: braco esticado apontando pro angulo escolhido — o comprimento
+  // cresce com a forca, dando pista visual de o quao longe vai o tiro.
   if (s.aimAngle !== null && s.alive) {
     const rad = (s.aimAngle * Math.PI) / 180;
     const ox = cx;
     const oy = feet - h * 0.55;
+    const armLen = 14 + Math.max(0, Math.min(1, s.aimPower)) * 16;
     ctx.save();
     ctx.strokeStyle = INK;
     ctx.lineWidth = 3;
     ctx.beginPath();
     ctx.moveTo(ox, oy);
-    ctx.lineTo(ox + Math.cos(rad) * 16, oy - Math.sin(rad) * 16);
+    ctx.lineTo(ox + Math.cos(rad) * armLen, oy - Math.sin(rad) * armLen);
     ctx.stroke();
     // Luva branca na ponta
     ctx.fillStyle = PALETTE.cream;
     ctx.beginPath();
-    ctx.arc(ox + Math.cos(rad) * 18, oy - Math.sin(rad) * 18, 3.5, 0, Math.PI * 2);
+    ctx.arc(ox + Math.cos(rad) * (armLen + 2), oy - Math.sin(rad) * (armLen + 2), 3.5, 0, Math.PI * 2);
     ctx.fill();
     ctx.stroke();
     ctx.restore();
@@ -492,6 +561,76 @@ export function drawWeaponIcon(ctx: CanvasRenderingContext2D, weaponId: string, 
     ctx.arc(0, 0, size * 0.4, 0, Math.PI * 2);
     ctx.fill();
     ctx.stroke();
+  }
+
+  ctx.restore();
+}
+
+/**
+ * Engradado de paraquedas — caixa de madeira com o paraquedas ainda preso em
+ * cima, balancando devagar. Cruz vermelha pra vida, icone da arma pra municao.
+ */
+export function drawCrate(
+  ctx: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  kind: 'health' | 'ammo',
+  weaponId: string | undefined,
+  weaponColor: string,
+  bobPhase: number,
+): void {
+  const sway = Math.sin(bobPhase) * 4;
+  const size = 26;
+
+  ctx.save();
+  ctx.translate(x, y - size);
+
+  // Cordas do paraquedas
+  ctx.strokeStyle = 'rgba(244,228,193,0.7)';
+  ctx.lineWidth = 1.2;
+  ctx.beginPath();
+  ctx.moveTo(-size * 0.35, -2);
+  ctx.lineTo(sway * 0.6, -size * 1.3);
+  ctx.moveTo(size * 0.35, -2);
+  ctx.lineTo(sway * 0.6, -size * 1.3);
+  ctx.stroke();
+
+  // Paraquedas
+  ctx.save();
+  ctx.translate(sway * 0.6, -size * 1.3);
+  ctx.fillStyle = PALETTE.crust;
+  ctx.strokeStyle = INK;
+  ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  ctx.arc(0, 0, size * 0.6, Math.PI, 0);
+  ctx.closePath();
+  ctx.fill();
+  ctx.stroke();
+  ctx.restore();
+
+  // Caixa
+  ctx.fillStyle = PALETTE.dirt;
+  ctx.strokeStyle = INK;
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.roundRect(-size / 2, -size / 2, size, size, 3);
+  ctx.fill();
+  ctx.stroke();
+  ctx.strokeStyle = 'rgba(26,10,0,0.5)';
+  ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  ctx.moveTo(-size / 2, 0);
+  ctx.lineTo(size / 2, 0);
+  ctx.moveTo(0, -size / 2);
+  ctx.lineTo(0, size / 2);
+  ctx.stroke();
+
+  if (kind === 'health') {
+    ctx.fillStyle = PALETTE.red;
+    ctx.fillRect(-2, -size * 0.32, 4, size * 0.64);
+    ctx.fillRect(-size * 0.32, -2, size * 0.64, 4);
+  } else if (weaponId) {
+    drawWeaponIcon(ctx, weaponId, 0, 0, size * 0.75, weaponColor);
   }
 
   ctx.restore();

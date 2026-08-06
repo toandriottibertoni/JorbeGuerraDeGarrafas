@@ -1,8 +1,14 @@
 import {
+  CRATE_AMMO_REFILL,
+  CRATE_HEAL_AMOUNT,
+  CRATE_MAX_PER_INTERVAL,
+  CRATE_MIN_PER_INTERVAL,
+  CRATE_PICKUP_RADIUS,
   EARLY_RESOLVE_GRACE_MS,
   JORBE_FUEL_PER_ROUND,
   JORBE_HEIGHT,
   JORBE_MAX_HP,
+  JORBE_WIDTH,
   MAX_POWER,
   MIN_POWER,
   NO_INPUT,
@@ -13,6 +19,7 @@ import {
   SNAPSHOT_RATE,
   TICK_DT,
   Terrain,
+  WEAPONS,
   WIND_MAX,
   getWeapon,
   pickSpawns,
@@ -24,6 +31,8 @@ import {
   type AimMessage,
   type CarveOp,
   type CharState,
+  type CrateDef,
+  type CratePicked,
   type InputMessage,
   type MatchEnd,
   type MatchStart,
@@ -60,6 +69,8 @@ export interface MatchOutbound {
   roundPrep: RoundPrep;
   snapshot: Snapshot;
   roundReady: ReadyState;
+  crates: CrateDef[];
+  cratePicked: CratePicked;
   roundResolve: ResolutionPlan;
   roundEnd: { round: number; alive: string[] };
   matchEnd: MatchEnd;
@@ -99,6 +110,8 @@ export class MatchEngine {
   /** Ordem estavel de processamento — nunca dependa da ordem de um Map. */
   private readonly order: string[] = [];
   private readonly carves: CarveOp[] = [];
+  private crates: CrateDef[] = [];
+  private nextCrateId = 1;
   private readonly rng: Rng;
 
   private phase: Phase = 'prep';
@@ -163,6 +176,7 @@ export class MatchEngine {
         return { id: p.id, nick: p.nick, isBot: p.isBot, x: p.char.x, y: p.char.y, hp: p.char.hp };
       }),
       carves: [],
+      crates: [],
     });
     this.beginPrep();
   }
@@ -181,6 +195,7 @@ export class MatchEngine {
         return { id: p.id, nick: p.nick, isBot: p.isBot, x: p.char.x, y: p.char.y, hp: p.char.hp };
       }),
       carves: this.carves.slice(),
+      crates: this.crates.slice(),
     };
   }
 
@@ -319,6 +334,8 @@ export class MatchEngine {
       if (e.kind === 'death') this.noteDeath(e.playerId);
     }
 
+    this.checkCratePickups();
+
     this.snapshotAccMs += dtMs;
     const interval = 1000 / SNAPSHOT_RATE;
     if (this.snapshotAccMs >= interval) {
@@ -350,9 +367,64 @@ export class MatchEngine {
         t: this.phaseElapsedMs,
         ackSeq: p.lastSeq,
         fuel: p.char.fuel,
+        ammo: { ...p.ammo },
         players,
         remaining,
       });
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // Engradados
+  // -------------------------------------------------------------------------
+
+  /** Sorteia 0-2 engradados em pontos jogaveis do mapa. Chamado a cada intervalo. */
+  private spawnCrates(): void {
+    this.crates = [];
+    const count = this.rng.int(CRATE_MIN_PER_INTERVAL, CRATE_MAX_PER_INTERVAL);
+    const margin = 150;
+    const ammoWeapons = WEAPONS.filter((w) => w.ammo !== null).map((w) => w.id);
+
+    for (let i = 0; i < count; i++) {
+      let placed = false;
+      for (let guard = 0; guard < 30 && !placed; guard++) {
+        const x = this.rng.int(margin, this.terrain.width - margin);
+        const y = this.terrain.groundBelow(x, 0);
+        if (y >= this.terrain.height - 30) continue; // caiu numa faixa sem chao jogavel
+
+        const kind: CrateDef['kind'] = this.rng.next() < 0.5 ? 'health' : 'ammo';
+        const weaponId = kind === 'ammo' && ammoWeapons.length > 0 ? this.rng.pick(ammoWeapons) : undefined;
+        this.crates.push({ id: this.nextCrateId++, x, y: y - 1, kind, weaponId });
+        placed = true;
+      }
+    }
+
+    this.sink.toAll('crates', this.crates.slice());
+  }
+
+  /** Um Jorbe encostou num engradado? Aplica o efeito e tira ele do mapa. */
+  private checkCratePickups(): void {
+    if (this.crates.length === 0) return;
+
+    for (const crate of [...this.crates]) {
+      for (const id of this.order) {
+        const p = this.players.get(id)!;
+        if (!p.char.alive) continue;
+        const dx = Math.abs(p.char.x - crate.x);
+        const dy = Math.abs(p.char.y - crate.y);
+        if (dx > JORBE_WIDTH / 2 + CRATE_PICKUP_RADIUS || dy > JORBE_HEIGHT + CRATE_PICKUP_RADIUS) continue;
+
+        if (crate.kind === 'health') {
+          p.char.hp = Math.min(JORBE_MAX_HP, p.char.hp + CRATE_HEAL_AMOUNT);
+        } else if (crate.weaponId) {
+          const cur = p.ammo[crate.weaponId];
+          if (cur !== null && cur !== undefined) p.ammo[crate.weaponId] = cur + CRATE_AMMO_REFILL;
+        }
+
+        this.crates = this.crates.filter((c) => c.id !== crate.id);
+        this.sink.toAll('cratePicked', { id: crate.id, playerId: p.id, kind: crate.kind });
+        break;
+      }
     }
   }
 
@@ -468,7 +540,12 @@ export class MatchEngine {
     const alive = this.alivePlayers();
     this.sink.toAll('roundEnd', { round: this.round, alive: alive.map((p) => p.id) });
 
-    if (alive.length <= 1) this.finish();
+    if (alive.length <= 1) {
+      this.finish();
+      return;
+    }
+
+    this.spawnCrates();
   }
 
   private noteDeath(playerId: string): void {

@@ -1,9 +1,15 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  CRATE_AMMO_REFILL,
+  CRATE_HEAL_AMOUNT,
   EARLY_RESOLVE_GRACE_MS,
   JORBE_MAX_HP,
+  MAP_WIDTH,
+  POWER_TO_SPEED,
   PREP_DT,
+  type CrateDef,
+  type CratePicked,
   type MatchEnd,
   type ReadyState,
   type ResolutionPlan,
@@ -190,7 +196,7 @@ test('angulo e forca fora da faixa sao corrigidos, nao aceitos', () => {
   const shot = plan.shots[0];
   assert.equal(shot.weaponId, 'tampinha', 'arma invalida cai na arma padrao');
   const speed = Math.sqrt(shot.vx * shot.vx + shot.vy * shot.vy);
-  assert.ok(speed <= 100 * 7.2 + 1, `forca deveria estar limitada, veio ${speed}`);
+  assert.ok(speed <= 100 * POWER_TO_SPEED + 1, `forca deveria estar limitada, veio ${speed}`);
 });
 
 test('explosao no proprio pe machuca quem atirou', () => {
@@ -452,4 +458,107 @@ test('jogador que sai no meio do preparo pode destravar a resolucao antecipada',
   advance(engine, (EARLY_RESOLVE_GRACE_MS / 1000) + 0.3);
   const plans = sink.eventsOf('roundResolve') as ResolutionPlan[];
   assert.equal(plans.length, 1, 'com p2 fora, p0 e p1 sozinhos ja estao todos prontos');
+});
+
+// ---------------------------------------------------------------------------
+// Engradados
+// ---------------------------------------------------------------------------
+
+/** Acessa estado privado do motor — deliberado: testar a logica de coleta
+ *  isolada da sorte do RNG de posicionamento e muito mais confiavel do que
+ *  procurar uma seed que por acaso spawna um engradado em cima de alguem. */
+function poke(engine: MatchEngine): any {
+  return engine as any;
+}
+
+test('partida comeca sem engradado nenhum', () => {
+  const { engine, sink } = makeMatch(2);
+  engine.start();
+  const start = sink.eventsOf('matchStart')[0] as { crates: CrateDef[] };
+  assert.deepEqual(start.crates, []);
+});
+
+test('intervalo sorteia entre 0 e 2 engradados validos e avisa todo mundo', () => {
+  const { engine, sink } = makeMatch(2);
+  engine.start();
+  advance(engine, 100); // atravessa preparo + resolucao + entra no intervalo
+
+  const batches = sink.eventsOf('crates') as CrateDef[][];
+  assert.ok(batches.length >= 1, 'deveria ter sorteado engradados ao entrar no intervalo');
+  const last = batches.at(-1)!;
+  assert.ok(last.length <= 2, `no maximo 2 engradados, veio ${last.length}`);
+  for (const c of last) {
+    assert.ok(['health', 'ammo'].includes(c.kind));
+    if (c.kind === 'ammo') assert.ok(typeof c.weaponId === 'string');
+    assert.ok(c.x > 0 && c.x < MAP_WIDTH, `x fora do mapa: ${c.x}`);
+  }
+});
+
+test('engradado de vida cura, sem passar do teto, e some do mapa ao ser pego', () => {
+  const { engine, sink } = makeMatch(2);
+  engine.start();
+
+  const p0 = poke(engine).players.get('p0');
+  p0.char.hp = 90; // perto do teto, pra provar que nao ultrapassa 100
+  poke(engine).crates = [{ id: 999, x: p0.char.x, y: p0.char.y, kind: 'health' }];
+
+  poke(engine).checkCratePickups();
+
+  assert.equal(p0.char.hp, JORBE_MAX_HP, `deveria curar ate o teto, veio ${p0.char.hp}`);
+  assert.equal(poke(engine).crates.length, 0, 'engradado precisa sumir do mapa depois de pego');
+
+  const picked = sink.eventsOf('cratePicked') as CratePicked[];
+  assert.equal(picked.length, 1);
+  assert.equal(picked[0].playerId, 'p0');
+  assert.equal(picked[0].kind, 'health');
+});
+
+test('cura nao ultrapassa o teto quando a vida ja esta alta', () => {
+  const { engine } = makeMatch(2);
+  engine.start();
+
+  const p0 = poke(engine).players.get('p0');
+  p0.char.hp = JORBE_MAX_HP - 5; // menos que CRATE_HEAL_AMOUNT de folga
+  poke(engine).crates = [{ id: 1, x: p0.char.x, y: p0.char.y, kind: 'health' }];
+  poke(engine).checkCratePickups();
+
+  assert.equal(p0.char.hp, JORBE_MAX_HP);
+  assert.ok(JORBE_MAX_HP - (JORBE_MAX_HP - 5) < CRATE_HEAL_AMOUNT, 'sanity: o teste so faz sentido perto do teto');
+});
+
+test('engradado de municao reabastece so a arma certa', () => {
+  const { engine } = makeMatch(2);
+  engine.start();
+
+  const p0 = poke(engine).players.get('p0');
+  const before = p0.ammo.bazuca as number;
+  poke(engine).crates = [{ id: 2, x: p0.char.x, y: p0.char.y, kind: 'ammo', weaponId: 'bazuca' }];
+  poke(engine).checkCratePickups();
+
+  assert.equal(p0.ammo.bazuca, before + CRATE_AMMO_REFILL);
+  assert.equal(p0.ammo.granada, 3, 'municao de outra arma nao pode mudar');
+});
+
+test('quem esta longe nao pega o engradado', () => {
+  const { engine } = makeMatch(2);
+  engine.start();
+
+  const p0 = poke(engine).players.get('p0');
+  poke(engine).crates = [{ id: 3, x: p0.char.x + 500, y: p0.char.y, kind: 'health' }];
+  p0.char.hp = 50;
+  poke(engine).checkCratePickups();
+
+  assert.equal(p0.char.hp, 50, 'engradado longe nao pode afetar ninguem');
+  assert.equal(poke(engine).crates.length, 1, 'engradado fora de alcance continua no mapa');
+});
+
+test('municao de arma infinita nao quebra ao "reabastecer"', () => {
+  const { engine } = makeMatch(2);
+  engine.start();
+
+  const p0 = poke(engine).players.get('p0');
+  poke(engine).crates = [{ id: 4, x: p0.char.x, y: p0.char.y, kind: 'ammo', weaponId: 'tampinha' }];
+  poke(engine).checkCratePickups();
+
+  assert.equal(p0.ammo.tampinha, null, 'tampinha e infinita, tem que continuar null');
 });

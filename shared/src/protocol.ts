@@ -59,6 +59,8 @@ export interface MatchStart {
   players: MatchPlayerInit[];
   /** Crateras ja abertas — preenchido para quem entra como espectador no meio. */
   carves: { x: number; y: number; r: number }[];
+  /** Engradados ainda no mapa — idem, pra quem entra como espectador no meio. */
+  crates: CrateDef[];
 }
 
 export interface RoundPrep {
@@ -92,6 +94,8 @@ export interface Snapshot {
   ackSeq: number;
   /** Combustivel restante do destinatario. */
   fuel: number;
+  /** Municao atual do destinatario — atualiza sozinho apos pegar um engradado. */
+  ammo: Record<string, number | null>;
   players: PlayerSnapshot[];
   /** Segundos restantes da fase de preparo. */
   remaining: number;
@@ -132,6 +136,21 @@ export interface RoundEnd {
 export interface MatchEnd {
   /** Ordem inversa de eliminacao: primeiro da lista e o campeao. */
   placements: { id: string; nick: string; placement: number }[];
+}
+
+/** Um engradado no mapa. `weaponId` so existe quando `kind === 'ammo'`. */
+export interface CrateDef {
+  id: number;
+  x: number;
+  y: number;
+  kind: 'health' | 'ammo';
+  weaponId?: string;
+}
+
+export interface CratePicked {
+  id: number;
+  playerId: string;
+  kind: 'health' | 'ammo';
 }
 
 // ---------------------------------------------------------------------------
@@ -185,6 +204,8 @@ export interface ServerToClientEvents {
   roundPrep: (data: RoundPrep) => void;
   snapshot: (data: Snapshot) => void;
   roundReady: (data: ReadyState) => void;
+  crates: (list: CrateDef[]) => void;
+  cratePicked: (data: CratePicked) => void;
   roundResolve: (plan: ResolutionPlan) => void;
   roundEnd: (data: RoundEnd) => void;
   matchEnd: (data: MatchEnd) => void;

@@ -12,9 +12,12 @@ import {
   TICK_DT,
   Terrain,
   WEAPONS,
+  WIND_MAX,
   getWeapon,
   stepCharacter,
   type CharState,
+  type CrateDef,
+  type CratePicked,
   type MatchEnd,
   type MatchStart,
   type MoveInput,
@@ -33,11 +36,13 @@ import {
   Shockwaves,
   Spring,
   TerrainRenderer,
+  drawCrate,
   drawFilmOverlay,
   drawJorbe,
   drawMinimap,
   drawSky,
   drawWeaponIcon,
+  drawWindIndicator,
   type JorbeAnim,
 } from './render.js';
 import * as sfx from './audio.js';
@@ -52,9 +57,18 @@ interface AnimRig {
   hitFlash: number;
   wasOnGround: boolean;
   prevHp: number;
+  /** Fase propria da respiracao parada — sem isso todo mundo respiraria em sincronia. */
+  idleOffset: number;
 }
 
-function freshRig(hp: number): AnimRig {
+/** Hash bem simples so pra espalhar a fase de respiracao entre os jogadores. */
+function idOffset(id: string): number {
+  let h = 0;
+  for (let i = 0; i < id.length; i++) h = (h * 31 + id.charCodeAt(i)) % 1000;
+  return (h / 1000) * Math.PI * 2;
+}
+
+function freshRig(hp: number, playerId: string): AnimRig {
   return {
     walkPhase: 0,
     walkAmp: 0,
@@ -64,6 +78,7 @@ function freshRig(hp: number): AnimRig {
     hitFlash: 0,
     wasOnGround: true,
     prevHp: hp,
+    idleOffset: idOffset(playerId),
   };
 }
 
@@ -118,6 +133,9 @@ const WEAPON_WEIGHT: Record<string, 'light' | 'medium' | 'heavy'> = {
  * cima dele, nunca influencia a simulacao.
  */
 export class MatchScene {
+  /** Altura do painel inferior do HUD — geometria compartilhada por desenho e clique. */
+  private static readonly HUD_H = 108;
+
   private readonly canvas: HTMLCanvasElement;
   private readonly ctx: CanvasRenderingContext2D;
   private readonly cam = new Camera();
@@ -153,6 +171,11 @@ export class MatchScene {
   private lastTickSecond = -1;
   private tickPulse = 0;
   private readonly cancelBtn: HTMLButtonElement;
+  private readonly leaveBtn: HTMLButtonElement;
+  private readonly readyBtn: HTMLButtonElement;
+  /** O que valia na rodada anterior — vento, e meu ultimo angulo/forca ajustados. */
+  private history: { wind: number; angle: number; power: number } | null = null;
+  private crates: CrateDef[] = [];
 
   private playback: Playback | null = null;
   private playAcc = 0;
@@ -160,6 +183,10 @@ export class MatchScene {
   private camFollowSelf = true;
   private dragging = false;
   private lastPointer: { x: number; y: number } | null = null;
+  private forceDragging = false;
+  private aimDragging = false;
+  /** Ponta do arraste de mira, em coordenadas de tela — pra desenhar o estilingue. */
+  private dragPointer: { x: number; y: number } | null = null;
 
   private banner = '';
   private bannerUntil = 0;
@@ -189,6 +216,27 @@ export class MatchScene {
     };
     document.body.appendChild(this.cancelBtn);
 
+    this.leaveBtn = document.createElement('button');
+    this.leaveBtn.id = 'leaveMatchBtn';
+    this.leaveBtn.className = 'ghost';
+    this.leaveBtn.textContent = 'Sair da partida';
+    this.leaveBtn.style.display = 'none';
+    this.leaveBtn.onclick = () => {
+      sfx.sfxUiClick();
+      this.net.socket.emit('roomLeave');
+    };
+    document.body.appendChild(this.leaveBtn);
+
+    this.readyBtn = document.createElement('button');
+    this.readyBtn.id = 'readyBtn';
+    this.readyBtn.textContent = 'OK — travar tiro';
+    this.readyBtn.style.display = 'none';
+    this.readyBtn.onclick = () => {
+      sfx.sfxUiClick();
+      this.fire();
+    };
+    document.body.appendChild(this.readyBtn);
+
     this.bindNet();
   }
 
@@ -203,6 +251,10 @@ export class MatchScene {
     s.on('roundPrep', (data: RoundPrep) => this.onRoundPrep(data));
     s.on('snapshot', (data: Snapshot) => this.onSnapshot(data));
     s.on('roundReady', (data: ReadyState) => this.onRoundReady(data));
+    s.on('crates', (list: CrateDef[]) => {
+      this.crates = list;
+    });
+    s.on('cratePicked', (data: CratePicked) => this.onCratePicked(data));
     s.on('roundResolve', (plan: ResolutionPlan) => this.onRoundResolve(plan));
     s.on('roundEnd', () => {
       this.phase = 'interval';
@@ -239,10 +291,11 @@ export class MatchScene {
         hp: p.hp,
         alive: true,
         fuel: JORBE_FUEL_PER_ROUND,
-        rig: freshRig(p.hp),
+        rig: freshRig(p.hp, p.id),
       });
     }
 
+    this.crates = data.crates;
     this.finalResult = null;
     this.phase = 'interval';
     const self = this.players.get(this.ownId);
@@ -253,6 +306,11 @@ export class MatchScene {
   private onRoundPrep(data: RoundPrep): void {
     // Toca ANTES de sobrescrever o vento antigo — e a mudanca que interessa.
     if (Math.abs(data.wind - this.wind) > 0.5) sfx.sfxWindChange(data.wind);
+
+    // Guarda o que valia ate agora, antes de resetar pra rodada nova.
+    if (this.round > 0) {
+      this.history = { wind: this.wind, angle: this.aimAngle, power: this.power };
+    }
 
     this.round = data.round;
     this.wind = data.wind;
@@ -286,9 +344,27 @@ export class MatchScene {
     return humans.length > 0 && humans.every((p) => this.readyIds.has(p.id));
   }
 
+  private onCratePicked(data: CratePicked): void {
+    const crate = this.crates.find((c) => c.id === data.id);
+    this.crates = this.crates.filter((c) => c.id !== data.id);
+    if (!crate) return;
+
+    const color = crate.kind === 'health' ? PALETTE.red : PALETTE.crust;
+    this.particles.burst(crate.x, crate.y - 14, 18, color);
+    this.particles.flash(crate.x, crate.y - 14, 14);
+    sfx.sfxPickup(crate.kind);
+
+    if (data.playerId === this.ownId) {
+      this.showBanner(crate.kind === 'health' ? 'Vida recuperada!' : 'Municao recebida!', 1000);
+    }
+  }
+
   private onSnapshot(data: Snapshot): void {
     this.remaining = data.remaining;
     this.fuel = data.fuel;
+    // Ammo pode mudar no meio do preparo (engradado) — o snapshot e a fonte
+    // de verdade, roundPrep so da o valor inicial da rodada.
+    this.ammo = data.ammo;
 
     for (const sp of data.players) {
       const p = this.players.get(sp.id);
@@ -403,14 +479,7 @@ export class MatchScene {
       }
     }
     if (k === 'c') this.camFollowSelf = true;
-    if (k >= '1' && k <= '9') {
-      const idx = Number(k) - 1;
-      if (idx < WEAPONS.length && !this.aimLocked) {
-        this.weaponIdx = idx;
-        this.sendAim(false);
-        sfx.sfxUiClick();
-      }
-    }
+    if (k >= '1' && k <= '9') this.selectWeapon(Number(k) - 1);
   };
 
   private onKeyUp = (e: KeyboardEvent): void => {
@@ -422,13 +491,101 @@ export class MatchScene {
     }
   };
 
+  /** Y do topo do painel inferior do HUD — usado tanto pra desenhar quanto pra testar clique. */
+  private get hudY(): number {
+    return this.cam.viewH - MatchScene.HUD_H;
+  }
+
+  private weaponCardRect(i: number): { x: number; y: number; w: number; h: number } {
+    return { x: 400 + i * 158, y: this.hudY + 14, w: 150, h: 54 };
+  }
+
+  private forceBarRect(): { x: number; y: number; w: number; h: number } {
+    return { x: 175, y: this.hudY + 38, w: 180, h: 12 };
+  }
+
+  private inRect(x: number, y: number, r: { x: number; y: number; w: number; h: number }): boolean {
+    return x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y + r.h;
+  }
+
+  private selectWeapon(idx: number): void {
+    if (this.aimLocked || idx >= WEAPONS.length) return;
+    this.weaponIdx = idx;
+    this.sendAim(false);
+    sfx.sfxUiClick();
+  }
+
+  private setPowerFromClientX(clientX: number): void {
+    const r = this.forceBarRect();
+    const t = (clientX - r.x) / r.w;
+    this.power = Math.max(MIN_POWER, Math.min(MAX_POWER, t * MAX_POWER));
+  }
+
+  /** Posicao do proprio Jorbe na tela — origem do "estilingue" da mira por arraste. */
+  private ownScreenAnchor(): { x: number; y: number } | null {
+    const self = this.players.get(this.ownId);
+    if (!self || !self.alive) return null;
+    return {
+      x: self.x - this.cam.renderX,
+      y: self.y - JORBE_HEIGHT * 0.55 - this.cam.renderY,
+    };
+  }
+
+  /** Angry Birds: puxar do Jorbe pra tras define angulo e forca de uma vez. */
+  private applyAimDrag(clientX: number, clientY: number): void {
+    const anchor = this.ownScreenAnchor();
+    if (!anchor) return;
+    const dragX = clientX - anchor.x;
+    const dragY = clientY - anchor.y;
+    const dist = Math.hypot(dragX, dragY);
+
+    if (dist > 6) {
+      const rawAngle = (Math.atan2(dragY, -dragX) * 180) / Math.PI;
+      this.aimAngle = Math.max(0, Math.min(180, rawAngle));
+    }
+    const maxDrag = 150;
+    this.power = MIN_POWER + (Math.min(dist, maxDrag) / maxDrag) * (MAX_POWER - MIN_POWER);
+  }
+
   private onPointerDown = (e: PointerEvent): void => {
+    const canAdjust = this.phase === 'prep' && !this.aimLocked;
+
+    if (canAdjust) {
+      for (let i = 0; i < WEAPONS.length; i++) {
+        if (this.inRect(e.clientX, e.clientY, this.weaponCardRect(i))) {
+          this.selectWeapon(i);
+          return;
+        }
+      }
+      if (this.inRect(e.clientX, e.clientY, this.forceBarRect())) {
+        this.forceDragging = true;
+        this.setPowerFromClientX(e.clientX);
+        return;
+      }
+      const anchor = this.ownScreenAnchor();
+      if (anchor && Math.hypot(e.clientX - anchor.x, e.clientY - anchor.y) <= 46) {
+        this.aimDragging = true;
+        this.dragPointer = { x: e.clientX, y: e.clientY };
+        this.applyAimDrag(e.clientX, e.clientY);
+        return;
+      }
+    }
+
     this.dragging = true;
     this.camFollowSelf = false;
     this.lastPointer = { x: e.clientX, y: e.clientY };
   };
 
   private onPointerMove = (e: PointerEvent): void => {
+    if (this.forceDragging) {
+      this.setPowerFromClientX(e.clientX);
+      return;
+    }
+    if (this.aimDragging) {
+      this.dragPointer = { x: e.clientX, y: e.clientY };
+      this.applyAimDrag(e.clientX, e.clientY);
+      return;
+    }
     if (!this.dragging || !this.lastPointer) return;
     this.cam.pan(this.lastPointer.x - e.clientX, this.lastPointer.y - e.clientY);
     this.lastPointer = { x: e.clientX, y: e.clientY };
@@ -437,6 +594,9 @@ export class MatchScene {
   private onPointerUp = (): void => {
     this.dragging = false;
     this.lastPointer = null;
+    this.forceDragging = false;
+    this.aimDragging = false;
+    this.dragPointer = null;
   };
 
   private onResize = (): void => {
@@ -554,13 +714,15 @@ export class MatchScene {
 
     this.terrainRenderer?.syncDirty();
     this.updateCamera(dt);
-    this.updateCancelButton();
+    this.updateActionButtons();
   }
 
-  private updateCancelButton(): void {
+  private updateActionButtons(): void {
     const self = this.players.get(this.ownId);
-    const show = this.phase === 'prep' && this.aimLocked && !!self?.alive && this.remaining > 0;
-    this.cancelBtn.style.display = show ? 'block' : 'none';
+    const inPrep = this.phase === 'prep' && !!self?.alive && this.remaining > 0;
+    this.cancelBtn.style.display = inPrep && this.aimLocked ? 'block' : 'none';
+    this.readyBtn.style.display = inPrep && !this.aimLocked && this.canFire() ? 'block' : 'none';
+    this.leaveBtn.style.display = this.terrainRenderer ? 'block' : 'none';
   }
 
   /** Avanca as molas de animacao de um Jorbe: caminhada, esprime e coice. */
@@ -814,12 +976,21 @@ export class MatchScene {
 
     ctx.drawImage(this.terrainRenderer.canvas, 0, 0);
 
+    for (const crate of this.crates) {
+      const weapon = crate.weaponId ? getWeapon(crate.weaponId) : null;
+      drawCrate(ctx, crate.x, crate.y, crate.kind, crate.weaponId, weapon?.color ?? PALETTE.crust, this.clock * 1.4 + crate.id);
+    }
+
     for (const p of this.players.values()) {
       const isSelf = p.id === this.ownId;
+      // Parado, o Jorbe respira — um esprime bem sutil, fora de fase entre jogadores.
+      const idleBob = p.alive && p.rig.walkAmp < 0.05
+        ? Math.sin(this.clock * 2.1 + p.rig.idleOffset) * 0.018
+        : 0;
       const anim: JorbeAnim = {
         walkPhase: p.rig.walkPhase,
         walkAmp: p.rig.walkAmp,
-        squashY: p.rig.squash.value,
+        squashY: p.rig.squash.value + idleBob,
         recoilX: p.rig.recoilX.value,
         recoilY: p.rig.recoilY.value,
         hitFlash: p.rig.hitFlash,
@@ -833,6 +1004,7 @@ export class MatchScene {
         nick: p.nick,
         isSelf,
         aimAngle: isSelf && this.phase === 'prep' && p.alive ? this.aimAngle : null,
+        aimPower: (Math.max(MIN_POWER, this.power) - MIN_POWER) / (MAX_POWER - MIN_POWER),
         anim: p.alive ? anim : { ...IDLE_ANIM, hitFlash: 0 },
       });
     }
@@ -848,6 +1020,7 @@ export class MatchScene {
     ctx.restore();
 
     this.drawHud();
+    if (this.phase !== 'over') drawWindIndicator(ctx, this.cam.viewW, this.wind, WIND_MAX);
     drawFilmOverlay(ctx, this.cam.viewW, this.cam.viewH, this.clock);
   }
 
@@ -906,8 +1079,8 @@ export class MatchScene {
     this.drawReadyPanel(ctx, mm);
 
     // Painel inferior
-    const h = 92;
-    const y = this.cam.viewH - h;
+    const h = MatchScene.HUD_H;
+    const y = this.hudY;
     ctx.fillStyle = 'rgba(19,8,2,0.88)';
     ctx.fillRect(0, y, this.cam.viewW, h);
     ctx.strokeStyle = PALETTE.crust;
@@ -941,18 +1114,35 @@ export class MatchScene {
       y + 70,
     );
 
+    // Historico da rodada anterior — pra comparar antes de ajustar de novo.
+    if (this.history) {
+      const hDir = this.history.wind > 0 ? '>>>' : this.history.wind < 0 ? '<<<' : '--';
+      ctx.font = 'italic 10px Georgia, serif';
+      ctx.fillStyle = 'rgba(244,228,193,0.5)';
+      ctx.fillText(
+        `antes: vento ${Math.abs(this.history.wind).toFixed(0)} ${hDir} · ${this.history.angle.toFixed(0)}° · forca ${Math.round(this.history.power)}`,
+        18,
+        y + 90,
+      );
+      ctx.font = '13px Georgia, serif';
+    }
+
     // Angulo e forca
     ctx.fillStyle = PALETTE.cream;
     ctx.fillText(`Angulo ${this.aimAngle.toFixed(0)} graus`, 130, y + 26);
 
-    ctx.fillText('Forca', 130, y + 48);
+    ctx.fillText('Forca (clique ou arraste)', 130, y + 48);
+    const fbar = this.forceBarRect();
     ctx.fillStyle = 'rgba(244,228,193,0.25)';
-    ctx.fillRect(175, y + 38, 180, 12);
+    ctx.fillRect(fbar.x, fbar.y, fbar.w, fbar.h);
     ctx.fillStyle = this.power > 80 ? PALETTE.red : PALETTE.crust;
-    ctx.fillRect(175, y + 38, (180 * this.power) / MAX_POWER, 12);
+    ctx.fillRect(fbar.x, fbar.y, (fbar.w * this.power) / MAX_POWER, fbar.h);
+    ctx.strokeStyle = INK;
+    ctx.lineWidth = 1;
+    ctx.strokeRect(fbar.x, fbar.y, fbar.w, fbar.h);
     ctx.fillStyle = PALETTE.cream;
     ctx.font = 'bold 11px Georgia, serif';
-    ctx.fillText(`${Math.round(this.power)}`, 361, y + 47);
+    ctx.fillText(`${Math.round(this.power)}`, fbar.x + fbar.w + 6, fbar.y + 9);
     ctx.font = '13px Georgia, serif';
 
     // Combustivel
@@ -963,30 +1153,30 @@ export class MatchScene {
     ctx.fillStyle = PALETTE.bottle;
     ctx.fillRect(185, y + 60, (170 * this.fuel) / JORBE_FUEL_PER_ROUND, 10);
 
-    // Armas — cartas com icone desenhado, nao so texto.
-    let wx = 400;
+    // Armas — cartas com icone desenhado, clicaveis, nao so texto.
     WEAPONS.forEach((w, i) => {
+      const card = this.weaponCardRect(i);
       const selected = i === this.weaponIdx;
       const ammo = this.ammo[w.id];
       const out = ammo !== null && ammo !== undefined && ammo <= 0;
 
       ctx.fillStyle = selected ? PALETTE.crust : 'rgba(244,228,193,0.12)';
       ctx.beginPath();
-      ctx.roundRect(wx, y + 14, 150, 54, 6);
+      ctx.roundRect(card.x, card.y, card.w, card.h, 6);
       ctx.fill();
       ctx.strokeStyle = INK;
       ctx.lineWidth = 2;
       ctx.stroke();
 
-      drawWeaponIcon(ctx, w.id, wx + 22, y + 41, 26, out ? 'rgba(217,164,65,0.3)' : w.color);
+      drawWeaponIcon(ctx, w.id, card.x + 22, card.y + 27, 26, out ? 'rgba(217,164,65,0.3)' : w.color);
 
       ctx.fillStyle = selected ? INK : out ? 'rgba(244,228,193,0.35)' : PALETTE.cream;
       ctx.font = 'bold 12px Georgia, serif';
-      ctx.fillText(`${i + 1}. ${w.name}`, wx + 42, y + 34);
+      ctx.fillText(`${i + 1}. ${w.name}`, card.x + 42, card.y + 20);
       ctx.font = '11px Georgia, serif';
-      ctx.fillText(ammo === null || ammo === undefined ? 'infinita' : `${ammo} restantes`, wx + 42, y + 52);
-      wx += 158;
+      ctx.fillText(ammo === null || ammo === undefined ? 'infinita' : `${ammo} restantes`, card.x + 42, card.y + 38);
     });
+    const wx = this.weaponCardRect(WEAPONS.length - 1).x + this.weaponCardRect(WEAPONS.length - 1).w;
 
     // Estado
     ctx.font = '13px Georgia, serif';
@@ -998,6 +1188,8 @@ export class MatchScene {
     else if (this.phase === 'interval') status = 'Fim da rodada';
     if (self && !self.alive) status = 'Voce foi eliminado — assistindo';
     ctx.fillText(status, wx + 10, y + 40);
+
+    this.drawAimDragLine(ctx);
 
     if (this.banner && performance.now() < this.bannerUntil) {
       ctx.font = 'bold 34px Georgia, serif';
@@ -1011,6 +1203,31 @@ export class MatchScene {
     }
 
     if (this.phase === 'over' && this.finalResult) this.drawResults();
+  }
+
+  /** Faixa tracejada do estilingue, do Jorbe ate o ponto que o mouse esta puxando. */
+  private drawAimDragLine(ctx: CanvasRenderingContext2D): void {
+    if (!this.aimDragging || !this.dragPointer) return;
+    const anchor = this.ownScreenAnchor();
+    if (!anchor) return;
+
+    ctx.save();
+    ctx.strokeStyle = PALETTE.crust;
+    ctx.lineWidth = 3;
+    ctx.setLineDash([6, 6]);
+    ctx.beginPath();
+    ctx.moveTo(anchor.x, anchor.y);
+    ctx.lineTo(this.dragPointer.x, this.dragPointer.y);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.fillStyle = PALETTE.red;
+    ctx.beginPath();
+    ctx.arc(this.dragPointer.x, this.dragPointer.y, 6, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.strokeStyle = INK;
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+    ctx.restore();
   }
 
   /** Mostra quem ja travou o tiro nesta rodada — nunca o que cada um mirou. */
