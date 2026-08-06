@@ -1,0 +1,28 @@
+{
+  "name": "guerra-de-garrafas",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Guerra de Garrafas — jogo de artilharia online estilo Gunbound + Worms, com o Jorbe Guarna",
+  "workspaces": [
+    "shared",
+    "server",
+    "client"
+  ],
+  "scripts": {
+    "dev": "concurrently -n server,client -c green,magenta \"npm:dev:server\" \"npm:dev:client\"",
+    "dev:server": "npm run dev --workspace @jorbe/server",
+    "dev:client": "npm run dev --workspace @jorbe/client",
+    "build": "npm run typecheck && npm run build --workspace @jorbe/client",
+    "start": "npm run start --workspace @jorbe/server",
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "test": "npm run test --workspaces --if-present"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.2",
+    "typescript": "^5.7.3"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

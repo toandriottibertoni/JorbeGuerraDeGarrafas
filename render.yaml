@@ -1,0 +1,25 @@
+services:
+  - type: web
+    name: guerra-de-garrafas
+    runtime: node
+    plan: free
+    region: oregon
+    buildCommand: npm install && npm run build
+    startCommand: npm start
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      # Connection string do cluster free do Atlas. Preencha no dashboard do
+      # Render — nunca commite isso no repositorio.
+      - key: MONGODB_URI
+        sync: false
+      - key: MONGODB_DB
+        value: guerra_de_garrafas
+      # Gere com: node -e "console.log(require('crypto').randomBytes(48).toString('hex'))"
+      - key: JWT_SECRET
+        sync: false
+      # A URL publica que o Render atribuir ao servico (ex: https://guerra-de-garrafas.onrender.com).
+      # So da pra saber depois do primeiro deploy — preencha e faca redeploy.
+      - key: CLIENT_ORIGIN
+        sync: false
