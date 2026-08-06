@@ -453,6 +453,9 @@ export class MatchScene {
     this.canvas.addEventListener('pointerdown', this.onPointerDown);
     window.addEventListener('pointermove', this.onPointerMove);
     window.addEventListener('pointerup', this.onPointerUp);
+    // Botao direito agora e dedicado a mover a camera — sem isso o navegador
+    // abriria o menu de contexto nativo a cada clique direito no jogo.
+    this.canvas.addEventListener('contextmenu', this.onContextMenu);
     window.addEventListener('resize', this.onResize);
     this.onResize();
   }
@@ -463,8 +466,13 @@ export class MatchScene {
     this.canvas.removeEventListener('pointerdown', this.onPointerDown);
     window.removeEventListener('pointermove', this.onPointerMove);
     window.removeEventListener('pointerup', this.onPointerUp);
+    this.canvas.removeEventListener('contextmenu', this.onContextMenu);
     window.removeEventListener('resize', this.onResize);
   }
+
+  private onContextMenu = (e: MouseEvent): void => {
+    e.preventDefault();
+  };
 
   private onKeyDown = (e: KeyboardEvent): void => {
     if (e.repeat) return;
@@ -548,6 +556,16 @@ export class MatchScene {
   }
 
   private onPointerDown = (e: PointerEvent): void => {
+    // Botao direito e sempre camera, em qualquer fase — sem ambiguidade
+    // com a mira, que fica inteira no esquerdo.
+    if (e.button === 2) {
+      this.dragging = true;
+      this.camFollowSelf = false;
+      this.lastPointer = { x: e.clientX, y: e.clientY };
+      return;
+    }
+    if (e.button !== 0) return;
+
     const canAdjust = this.phase === 'prep' && !this.aimLocked;
 
     if (canAdjust) {
@@ -562,8 +580,10 @@ export class MatchScene {
         this.setPowerFromClientX(e.clientX);
         return;
       }
+      // Esquerdo em QUALQUER ponto do mapa mira — nao precisa acertar o
+      // Jorbe, o vetor de estilingue e calculado a partir dele de qualquer jeito.
       const anchor = this.ownScreenAnchor();
-      if (anchor && Math.hypot(e.clientX - anchor.x, e.clientY - anchor.y) <= 46) {
+      if (anchor) {
         this.aimDragging = true;
         this.dragPointer = { x: e.clientX, y: e.clientY };
         this.applyAimDrag(e.clientX, e.clientY);
@@ -571,6 +591,8 @@ export class MatchScene {
       }
     }
 
+    // Fora da fase de mira (ou sem Jorbe vivo pra mirar), o esquerdo tambem
+    // pode mover a camera — senao o jogador fica sem jeito de olhar o mapa.
     this.dragging = true;
     this.camFollowSelf = false;
     this.lastPointer = { x: e.clientX, y: e.clientY };
