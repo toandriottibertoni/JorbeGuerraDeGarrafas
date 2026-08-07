@@ -187,6 +187,8 @@ export class MatchScene {
   private charging = false;
   private aimLocked = false;
   private weaponIdx = 0;
+  /** Escudo e um toggle independente da arma selecionada — pode atirar normal e ainda ficar protegido. */
+  private shieldArmed = false;
 
   private keys = new Set<string>();
   private inputSeq = 0;
@@ -219,6 +221,8 @@ export class MatchScene {
   private showFireTutorial = MatchScene.readNeverFired();
   /** Quem ativou o escudo nesta rodada — desenha a aura ate a proxima rodada comecar. */
   private shielded = new Set<string>();
+  /** Ultima mensagem de chat de cada jogador, com prazo — balaozinho no mundo, estilo RPG. */
+  private chatBubbles = new Map<string, { text: string; until: number }>();
 
   private playback: Playback | null = null;
   private playAcc = 0;
@@ -370,6 +374,9 @@ export class MatchScene {
       this.chatUnread += 1;
       this.chatToggleBtn.textContent = `Chat (${this.chatUnread})`;
     }
+
+    const sender = [...this.players.values()].find((p) => p.nick === msg.from);
+    if (sender) this.chatBubbles.set(sender.id, { text: msg.text, until: this.clock + 4.5 });
   }
 
   // -------------------------------------------------------------------------
@@ -471,6 +478,7 @@ export class MatchScene {
     this.pending = [];
     this.cameraManualHold = false;
     this.shielded = new Set();
+    this.shieldArmed = false;
     this.readyIds = new Set();
     this.lastTickSecond = -1;
     this.tickPulse = 0;
@@ -522,7 +530,10 @@ export class MatchScene {
       p.alive = sp.alive;
       p.facing = sp.facing;
 
-      const landedNow = sp.onGround && !p.rig.wasOnGround;
+      // So conta como "pouso" com queda de verdade — chao irregular faz o
+      // onGround piscar false/true a cada solavanco de andar, e sem esse
+      // piso minimo o coice se acumulava a cada bump e distorcia o sprite.
+      const landedNow = sp.onGround && !p.rig.wasOnGround && sp.vy > 40;
       if (landedNow) {
         p.rig.squash.kick(-260);
         if (sp.id === this.ownId) sfx.sfxLand();
@@ -641,16 +652,13 @@ export class MatchScene {
     if (k === ' ') {
       e.preventDefault();
       if (this.phase === 'prep' && !this.aimLocked && this.canFire()) {
-        // Escudo nao tem forca pra carregar — um toque ja ativa.
-        if (this.weapon.defensive) this.fire();
-        else {
-          this.charging = true;
-          this.power = MIN_POWER;
-        }
+        this.charging = true;
+        this.power = MIN_POWER;
       }
     }
     if (k === 'c') this.cameraManualHold = false;
-    if (k >= '1' && k <= '9') this.selectWeapon(Number(k) - 1);
+    if (k >= '1' && k <= '3') this.selectWeapon(Number(k) - 1);
+    if (k === '4' || k === 'e') this.toggleShield();
   };
 
   private onKeyUp = (e: KeyboardEvent): void => {
@@ -711,10 +719,21 @@ export class MatchScene {
   }
 
   private selectWeapon(idx: number): void {
-    if (this.aimLocked || idx >= WEAPONS.length) return;
+    if (this.aimLocked || idx < 0 || idx >= WEAPONS.length || WEAPONS[idx]!.defensive) return;
     this.weaponIdx = idx;
     this.sendAim(false);
     sfx.sfxUiClick();
+  }
+
+  /** Escudo e um toggle a parte — arma/desarma sem trocar a arma que vai atirar. */
+  private toggleShield(): void {
+    if (this.aimLocked) return;
+    const ammo = this.ammo.escudo;
+    const hasCharge = ammo === null || ammo === undefined || ammo > 0;
+    if (!this.shieldArmed && !hasCharge) return;
+    this.shieldArmed = !this.shieldArmed;
+    this.sendAim(false);
+    sfx.sfxShieldUp();
   }
 
   private setPowerFromClientX(clientX: number): void {
@@ -755,7 +774,7 @@ export class MatchScene {
     // Botao direito: mira em QUALQUER ponto do mapa — nao precisa acertar o
     // Jorbe, o vetor de estilingue e calculado a partir dele de qualquer jeito.
     if (e.button === 2) {
-      if (!canAdjust || this.weapon.defensive) return;
+      if (!canAdjust) return;
       const anchor = this.ownScreenAnchor();
       if (anchor) {
         this.aimDragging = true;
@@ -771,7 +790,8 @@ export class MatchScene {
     if (canAdjust) {
       for (let i = 0; i < WEAPONS.length; i++) {
         if (this.inRect(e.clientX, e.clientY, this.weaponCardRect(i))) {
-          this.selectWeapon(i);
+          if (WEAPONS[i]!.defensive) this.toggleShield();
+          else this.selectWeapon(i);
           return;
         }
       }
@@ -846,6 +866,7 @@ export class MatchScene {
       power: Math.max(MIN_POWER, this.power),
       weaponId: this.weapon.id,
       fire,
+      shield: this.shieldArmed,
     });
   }
 
@@ -858,13 +879,10 @@ export class MatchScene {
       MatchScene.markFired();
     }
 
-    if (this.weapon.defensive) {
-      this.showBanner('Escudo ativado — protegido nesta rodada', 1500);
-      sfx.sfxShieldUp();
-      return;
-    }
-
-    this.showBanner('Tiro travado — aguardando a rodada', 1500);
+    this.showBanner(
+      this.shieldArmed ? 'Tiro travado — escudo armado' : 'Tiro travado — aguardando a rodada',
+      1500,
+    );
     // Coice imediato no proprio Jorbe — feedback instantaneo, antes mesmo do
     // servidor confirmar. E so cosmetico, a fisica de verdade so roda na
     // resolucao.
@@ -1254,11 +1272,20 @@ export class MatchScene {
     for (const crate of this.crates) {
       const weapon = crate.weaponId ? getWeapon(crate.weaponId) : null;
       const spawnAt = this.crateSpawnClock.get(crate.id) ?? this.clock;
-      const showParachute = this.clock - spawnAt < 1.3;
+      const elapsed = this.clock - spawnAt;
+      // Queda visual (so cosmetica — a posicao real pro servidor ja e a final):
+      // comeca bem alto no ceu e desacelera se aproximando do chao, como se o
+      // paraquedas estivesse freando.
+      const fallDuration = 2.2;
+      const dropHeight = 460;
+      const fallProgress = Math.min(1, Math.max(0, elapsed / fallDuration));
+      const eased = 1 - (1 - fallProgress) * (1 - fallProgress);
+      const drawY = crate.y - (1 - eased) * dropHeight;
+      const showParachute = elapsed < fallDuration + 0.15;
       drawCrate(
         ctx,
         crate.x,
-        crate.y,
+        drawY,
         crate.kind,
         crate.weaponId,
         weapon?.color ?? PALETTE.crust,
@@ -1276,7 +1303,10 @@ export class MatchScene {
       const anim: JorbeAnim = {
         walkPhase: p.rig.walkPhase,
         walkAmp: p.rig.walkAmp,
-        squashY: p.rig.squash.value + idleBob,
+        // Pousos seguidos em terreno irregular (andando) podem empurrar a mola
+        // repetidas vezes antes dela assentar — sem limite, o valor podia
+        // passar de zero e o `ctx.scale` virava o sprite de cabeca pra baixo.
+        squashY: Math.max(0.4, Math.min(1.8, p.rig.squash.value + idleBob)),
         recoilX: p.rig.recoilX.value,
         recoilY: p.rig.recoilY.value,
         hitFlash: p.rig.hitFlash,
@@ -1285,7 +1315,7 @@ export class MatchScene {
         drawShieldAura(ctx, p.x, p.y, this.clock);
       }
 
-      const canAim = isSelf && this.phase === 'prep' && p.alive && !this.weapon.defensive;
+      const canAim = isSelf && this.phase === 'prep' && p.alive;
       drawJorbe(ctx, {
         x: p.x,
         y: p.y,
@@ -1296,20 +1326,21 @@ export class MatchScene {
         isSelf,
         aimAngle: canAim ? this.aimAngle : null,
         aimPower: (Math.max(MIN_POWER, this.power) - MIN_POWER) / (MAX_POWER - MIN_POWER),
-        aimLabel: !this.showFireTutorial
-          ? isSelf && this.phase === 'prep' && p.alive && this.weapon.defensive
-            ? this.aimLocked
-              ? 'Escudo ativado'
-              : 'Escudo pronto'
-            : canAim
-              ? `${this.aimAngle.toFixed(0)}° · ${Math.round(this.power)}`
-              : null
-          : null,
+        aimLabel:
+          canAim && !this.showFireTutorial
+            ? `${this.aimAngle.toFixed(0)}° · ${Math.round(this.power)}${this.shieldArmed ? ' · Escudo' : ''}`
+            : null,
         anim: p.alive ? anim : { ...IDLE_ANIM, hitFlash: 0 },
       });
 
       if (isSelf && this.showFireTutorial && this.phase === 'prep' && !this.aimLocked && p.alive) {
         this.drawFireTutorialBalloon(ctx, p);
+      }
+
+      const bubble = this.chatBubbles.get(p.id);
+      if (bubble) {
+        if (bubble.until > this.clock) this.drawChatBubble(ctx, p, bubble.text);
+        else this.chatBubbles.delete(p.id);
       }
     }
 
@@ -1425,6 +1456,44 @@ export class MatchScene {
       ctx.fillStyle = i === 0 ? PALETTE.bottle : PALETTE.cream;
       ctx.fillText(line, cx, by + 17 + i * lineH);
     });
+    ctx.textAlign = 'left';
+    ctx.restore();
+  }
+
+  /** Balaozinho de fala estilo RPG — aparece no mundo, do lado do Jorbe, quando o jogador manda uma mensagem no chat. */
+  private drawChatBubble(ctx: CanvasRenderingContext2D, p: RemotePlayer, text: string): void {
+    const truncated = text.length > 46 ? `${text.slice(0, 46)}…` : text;
+    ctx.save();
+    ctx.font = '12px Georgia, serif';
+    const textW = ctx.measureText(truncated).width;
+    const bw = textW + 22;
+    const bh = 26;
+    const cx = p.x;
+    // Mais alto que o balao de mira/tutorial pra nao se sobrepor quando os dois aparecem juntos.
+    const by = p.y - JORBE_HEIGHT - 56 - bh;
+    const bx = cx - bw / 2;
+
+    ctx.fillStyle = 'rgba(244,228,193,0.95)';
+    ctx.strokeStyle = INK;
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.roundRect(bx, by, bw, bh, 9);
+    ctx.fill();
+    ctx.stroke();
+
+    ctx.beginPath();
+    ctx.moveTo(cx - 6, by + bh - 1);
+    ctx.lineTo(cx, by + bh + 8);
+    ctx.lineTo(cx + 6, by + bh - 1);
+    ctx.closePath();
+    ctx.fillStyle = 'rgba(244,228,193,0.95)';
+    ctx.fill();
+    ctx.strokeStyle = INK;
+    ctx.stroke();
+
+    ctx.fillStyle = INK;
+    ctx.textAlign = 'center';
+    ctx.fillText(truncated, cx, by + bh / 2 + 4);
     ctx.textAlign = 'left';
     ctx.restore();
   }
@@ -1593,12 +1662,15 @@ export class MatchScene {
     // Armas — cartas com icone desenhado, clicaveis, nao so texto.
     WEAPONS.forEach((w, i) => {
       const card = this.weaponCardRect(i);
-      const selected = i === this.weaponIdx;
+      // Escudo e um toggle a parte (armado/desarmado), nao uma "arma selecionada"
+      // como as outras tres — usa a propria cor pra deixar essa diferenca clara.
+      const active = w.defensive ? this.shieldArmed : i === this.weaponIdx;
+      const activeColor = w.defensive ? '#6fb8d6' : PALETTE.crust;
       const ammo = this.ammo[w.id];
       const out = ammo !== null && ammo !== undefined && ammo <= 0;
       const narrow = card.w < 130;
 
-      ctx.fillStyle = selected ? PALETTE.crust : 'rgba(244,228,193,0.12)';
+      ctx.fillStyle = active ? activeColor : 'rgba(244,228,193,0.12)';
       ctx.beginPath();
       ctx.roundRect(card.x, card.y, card.w, card.h, 6);
       ctx.fill();
@@ -1607,7 +1679,7 @@ export class MatchScene {
       ctx.stroke();
 
       const iconColor = out ? 'rgba(217,164,65,0.3)' : w.color;
-      const textColor = selected ? INK : out ? 'rgba(244,228,193,0.35)' : PALETTE.cream;
+      const textColor = active ? INK : out ? 'rgba(244,228,193,0.35)' : PALETTE.cream;
       const ammoLabel = ammo === null || ammo === undefined ? 'infinita' : `${ammo}`;
 
       if (narrow) {
@@ -1674,7 +1746,6 @@ export class MatchScene {
    */
   private computeAimPreview(): { x: number; y: number }[] | null {
     if (this.phase !== 'prep' || this.aimLocked || !this.terrain) return null;
-    if (this.weapon.defensive) return null;
     const self = this.players.get(this.ownId);
     if (!self || !self.alive) return null;
 

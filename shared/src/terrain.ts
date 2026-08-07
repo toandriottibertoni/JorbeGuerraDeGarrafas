@@ -174,15 +174,15 @@ export class Terrain {
 }
 
 /**
- * Altura do chao considerando a LARGURA inteira do Jorbe, nao so uma coluna.
- * `groundBelow` de coluna unica bastava num terreno chapado, mas numa ladeira
- * o ponto mais alto (menor y) dentro da largura do corpo pode ficar bem acima
- * do que a coluna central sozinha acusaria — resultado: o corpo inteiro nasce
- * sobrepondo terreno solido de um lado. Usa o ponto mais restritivo (menor y)
- * amostrado ao longo da largura, garantindo que nenhuma coluna fique embaixo
- * da superficie.
+ * Altura do chao considerando a LARGURA inteira de algo (Jorbe, engradado),
+ * nao so uma coluna. `groundBelow` de coluna unica bastava num terreno
+ * chapado, mas numa ladeira o ponto mais alto (menor y) dentro da largura do
+ * corpo pode ficar bem acima do que a coluna central sozinha acusaria —
+ * resultado: o objeto nasce sobrepondo terreno solido de um lado. Usa o
+ * ponto mais restritivo (menor y) amostrado ao longo da largura, garantindo
+ * que nenhuma coluna fique embaixo da superficie.
  */
-function groundBelowSpan(terrain: Terrain, centerX: number, width: number): number {
+export function groundBelowSpan(terrain: Terrain, centerX: number, width: number): number {
   const half = Math.floor(width / 2);
   let minY = terrain.height;
   // Passo 1: um pico estreito de 1-2px entre amostras espacadas escaparia

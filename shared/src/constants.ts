@@ -95,6 +95,8 @@ export const CRATE_HEAL_AMOUNT = 30;
 export const CRATE_AMMO_REFILL = 2;
 /** Raio de coleta, em pixels, a partir do centro do Jorbe. */
 export const CRATE_PICKUP_RADIUS = 26;
+/** Largura visual da caixa, em pixels — usada tambem pro spawn checar o chao na largura toda, nao so uma coluna. */
+export const CRATE_WIDTH = 26;
 
 /** Chaves usadas nos cookies de sessao. */
 export const ACCESS_COOKIE = 'jb_access';

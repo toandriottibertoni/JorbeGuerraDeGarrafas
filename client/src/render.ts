@@ -1,4 +1,5 @@
 import {
+  CRATE_WIDTH,
   JORBE_HEIGHT,
   JORBE_WIDTH,
   MAP_HEIGHT,
@@ -682,7 +683,7 @@ export function drawCrate(
   showParachute: boolean,
 ): void {
   const sway = Math.sin(bobPhase) * 4;
-  const size = 26;
+  const size = CRATE_WIDTH;
 
   ctx.save();
   ctx.translate(x, y - size);

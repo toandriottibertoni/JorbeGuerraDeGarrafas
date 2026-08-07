@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {
   CRATE_AMMO_REFILL,
   CRATE_HEAL_AMOUNT,
+  CRATE_WIDTH,
   EARLY_RESOLVE_GRACE_MS,
   JORBE_MAX_HP,
   MAP_WIDTH,
@@ -566,6 +567,60 @@ test('municao de arma infinita nao quebra ao "reabastecer"', () => {
   assert.equal(p0.ammo.tampinha, null, 'tampinha e infinita, tem que continuar null');
 });
 
+test('engradado nao nasce parcialmente enterrado no terreno', () => {
+  const { engine } = makeMatch(4, 909);
+  engine.start();
+
+  for (let round = 0; round < 6; round++) {
+    poke(engine).spawnCrates();
+    const terrain = poke(engine).terrain;
+    for (const c of poke(engine).crates as CrateDef[]) {
+      const half = Math.floor(CRATE_WIDTH / 2);
+      for (let dx = -half; dx <= half; dx++) {
+        assert.equal(
+          terrain.isSolid(c.x + dx, c.y),
+          false,
+          `engradado id=${c.id} em x=${c.x} deveria estar livre em dx=${dx}`,
+        );
+      }
+    }
+  }
+});
+
+test('acertar um engradado com o tiro da o efeito pra quem atirou', () => {
+  const { engine, sink } = makeMatch(2);
+  engine.start();
+
+  const p0 = poke(engine).players.get('p0');
+  p0.char.hp = 50;
+  poke(engine).crates = [{ id: 10, x: 1200, y: 500, kind: 'health' }];
+
+  poke(engine).claimCratesFromExplosions(
+    [{ id: 1, ownerId: 'p0', weaponId: 'bazuca', x: 0, y: 0, vx: 0, vy: 0 }],
+    [{ kind: 'explosion', tick: 5, shotId: 1, x: 1210, y: 505, weaponId: 'bazuca', radius: 40 }],
+  );
+
+  assert.equal(p0.char.hp, 50 + CRATE_HEAL_AMOUNT, 'quem atirou deveria receber a cura');
+  assert.equal(poke(engine).crates.length, 0, 'engradado acertado some do mapa');
+  const picked = sink.eventsOf('cratePicked') as CratePicked[];
+  assert.equal(picked.length, 1);
+  assert.equal(picked[0].playerId, 'p0');
+});
+
+test('explosao longe do engradado nao o afeta', () => {
+  const { engine } = makeMatch(2);
+  engine.start();
+
+  poke(engine).crates = [{ id: 11, x: 1200, y: 500, kind: 'health' }];
+
+  poke(engine).claimCratesFromExplosions(
+    [{ id: 1, ownerId: 'p0', weaponId: 'bazuca', x: 0, y: 0, vx: 0, vy: 0 }],
+    [{ kind: 'explosion', tick: 5, shotId: 1, x: 1500, y: 500, weaponId: 'bazuca', radius: 40 }],
+  );
+
+  assert.equal(poke(engine).crates.length, 1, 'explosao fora do raio nao pode afetar o engradado');
+});
+
 // ---------------------------------------------------------------------------
 // Jorbots — andam e atiram de verdade
 // ---------------------------------------------------------------------------
@@ -762,41 +817,69 @@ test('matchStats e transmitido pra sala junto com cada resolucao de rodada', () 
 });
 
 // ---------------------------------------------------------------------------
-// Escudo — arma defensiva
+// Resolucao fatiada — nao pode travar o event loop numa chamada so
 // ---------------------------------------------------------------------------
 
-test('ativar o escudo nao cria tiro nenhum e entra na lista de escudados', () => {
+test('resolucao de uma rodada de verdade leva mais de uma chamada de update pra terminar', () => {
   const { engine, sink } = makeMatch(2);
   engine.start();
 
-  engine.applyAim('p0', { angle: 45, power: 50, weaponId: 'escudo', fire: true });
+  engine.applyAim('p0', { angle: 45, power: 80, weaponId: 'bazuca', fire: true });
+  engine.applyAim('p1', { angle: 45, power: 80, weaponId: 'bazuca', fire: true });
+  // Passa so pouquinho da folga de resolucao antecipada — mal da tempo de
+  // entrar em 'resolve', nao pra um tiro de verdade assentar.
+  advance(engine, EARLY_RESOLVE_GRACE_MS / 1000 + 0.05);
+
+  assert.equal(poke(engine).phase, 'resolve');
+  assert.ok(
+    poke(engine).resolving,
+    'um tiro de arco normal nao pode assentar dentro de um unico lote de ticks',
+  );
+  assert.equal(sink.eventsOf('roundResolve').length, 0, 'ainda nao terminou de processar, nao pode ter transmitido');
+
+  // Agora sim, tempo de sobra pra terminar de processar em lotes.
+  advance(engine, 5);
+  assert.equal(poke(engine).resolving, null, 'depois de tempo suficiente a resolucao termina');
+  assert.equal(sink.eventsOf('roundResolve').length, 1);
+});
+
+// ---------------------------------------------------------------------------
+// Escudo — arma defensiva
+// ---------------------------------------------------------------------------
+
+test('ativar o escudo nao impede de atirar — os dois acontecem juntos', () => {
+  const { engine, sink } = makeMatch(2);
+  engine.start();
+
+  engine.applyAim('p0', { angle: 45, power: 50, weaponId: 'tampinha', fire: true, shield: true });
   engine.applyAim('p1', { angle: 45, power: 50, weaponId: 'tampinha', fire: true });
   advance(engine, EARLY_RESOLVE_GRACE_MS / 1000 + 0.3);
 
   const plan = (sink.eventsOf('roundResolve') as ResolutionPlan[])[0];
   assert.ok(plan, 'rodada deveria ter resolvido');
-  assert.equal(
+  assert.ok(
     plan.shots.some((s) => s.ownerId === 'p0'),
-    false,
-    'ativar escudo nao pode gerar projetil',
+    'ativar escudo nao pode impedir de atirar normalmente',
   );
-  assert.equal(plan.shots.length, 1, 'so o tiro do p1 deveria existir');
+  assert.equal(plan.shots.length, 2, 'os dois jogadores atiraram');
   assert.deepEqual(plan.shielded, ['p0']);
   assert.equal(poke(engine).players.get('p0').char.shielded, true);
 });
 
-test('escudo gasta uma carga por ativacao e reseta a cada rodada nova', () => {
+test('escudo gasta uma carga por ativacao, independente da municao da arma, e reseta a cada rodada nova', () => {
   const { engine } = makeMatch(2);
   engine.start();
 
   const p0 = poke(engine).players.get('p0');
   assert.equal(p0.ammo.escudo, 3, 'comeca com 3 cargas');
+  assert.equal(p0.ammo.bazuca, 4);
 
-  engine.applyAim('p0', { angle: 45, power: 50, weaponId: 'escudo', fire: true });
+  engine.applyAim('p0', { angle: 45, power: 50, weaponId: 'bazuca', fire: true, shield: true });
   engine.applyAim('p1', { angle: 45, power: 50, weaponId: 'tampinha', fire: true });
   advance(engine, EARLY_RESOLVE_GRACE_MS / 1000 + 0.3);
 
-  assert.equal(p0.ammo.escudo, 2, 'ativar consome uma carga');
+  assert.equal(p0.ammo.escudo, 2, 'ativar escudo consome uma carga dele');
+  assert.equal(p0.ammo.bazuca, 3, 'atirar consome municao da arma normalmente, independente do escudo');
   assert.equal(p0.char.shielded, true, 'protegido ate a proxima rodada comecar');
 
   // Fim do intervalo, proxima rodada comeca — precisa ativar de novo.

@@ -4,6 +4,7 @@ import {
   CRATE_MAX_PER_INTERVAL,
   CRATE_MIN_PER_INTERVAL,
   CRATE_PICKUP_RADIUS,
+  CRATE_WIDTH,
   EARLY_RESOLVE_GRACE_MS,
   JORBE_FUEL_PER_ROUND,
   JORBE_HEIGHT,
@@ -23,6 +24,7 @@ import {
   WIND_MAX,
   WIND_MAX_DELTA,
   getWeapon,
+  groundBelowSpan,
   pickSpawns,
   prepSecondsFor,
   simSettled,
@@ -134,6 +136,23 @@ export class MatchEngine {
   private phase: Phase = 'prep';
   private phaseElapsedMs = 0;
   private phaseDurationMs = 0;
+  /**
+   * Estado da resolucao em andamento — processada aos poucos entre chamadas
+   * de update() (ver `advanceResolve`) em vez de tudo numa chamada sincrona
+   * so. Uma rodada caotica de 15 jogadores pode levar ate 1200 ticks pra
+   * assentar; computar isso de uma vez travaria o event loop inteiro, o que
+   * atrasa TODAS as salas do processo, nao so a que esta resolvendo.
+   */
+  private resolving: {
+    chars: CharState[];
+    shots: ShotInit[];
+    projectiles: Projectile[];
+    events: SimEvent[];
+    shielded: string[];
+    ticks: number;
+  } | null = null;
+  /** Teto de ticks simulados por chamada de update() — mantem cada chamada barata. */
+  private static readonly RESOLVE_TICKS_PER_UPDATE = 60;
   private snapshotAccMs = 0;
   private round = 0;
   private wind = 0;
@@ -230,15 +249,23 @@ export class MatchEngine {
         this.allReadySince !== null && this.phaseElapsedMs - this.allReadySince >= EARLY_RESOLVE_GRACE_MS;
       // Todo mundo travou o tiro: nao faz sentido esperar o resto do timer.
       // A folga curta e so pra nao cortar seco assim que o ultimo trava.
-      if (timeUp || allReadyElapsed) this.runResolve();
+      if (timeUp || allReadyElapsed) this.beginResolve();
       return;
     }
 
-    if (this.phase === 'resolve' || this.phase === 'interval') {
-      if (this.phaseElapsedMs >= this.phaseDurationMs) {
-        if (this.phase === 'resolve') this.beginInterval();
-        else this.beginPrep();
+    if (this.phase === 'resolve') {
+      if (this.resolving) {
+        // Ainda processando em lotes — so termina (e transmite o plano)
+        // quando `resolving` virar null.
+        this.advanceResolve();
+        return;
       }
+      if (this.phaseElapsedMs >= this.phaseDurationMs) this.beginInterval();
+      return;
+    }
+
+    if (this.phase === 'interval') {
+      if (this.phaseElapsedMs >= this.phaseDurationMs) this.beginPrep();
     }
   }
 
@@ -265,7 +292,7 @@ export class MatchEngine {
     const angle = Number.isFinite(msg.angle) ? ((msg.angle % 360) + 360) % 360 : 45;
     const power = Number.isFinite(msg.power) ? Math.min(MAX_POWER, Math.max(MIN_POWER, msg.power)) : MIN_POWER;
 
-    p.aim = { angle, power, weaponId: weapon.id, fire: !!msg.fire };
+    p.aim = { angle, power, weaponId: weapon.id, fire: !!msg.fire, shield: !!msg.shield };
     this.recomputeReadiness();
   }
 
@@ -418,7 +445,9 @@ export class MatchEngine {
       let placed = false;
       for (let guard = 0; guard < 30 && !placed; guard++) {
         const x = this.rng.int(margin, this.terrain.width - margin);
-        const y = this.terrain.groundBelow(x, 0);
+        // Largura toda, nao so a coluna central — senao a caixa nasce meio
+        // enterrada quando cai numa ladeira (mesma armadilha do spawn do Jorbe).
+        const y = groundBelowSpan(this.terrain, x, CRATE_WIDTH);
         if (y >= this.terrain.height - 30) continue; // caiu numa faixa sem chao jogavel
 
         const kind: CrateDef['kind'] = this.rng.next() < 0.5 ? 'health' : 'ammo';
@@ -443,16 +472,48 @@ export class MatchEngine {
         const dy = Math.abs(p.char.y - crate.y);
         if (dx > JORBE_WIDTH / 2 + CRATE_PICKUP_RADIUS || dy > JORBE_HEIGHT + CRATE_PICKUP_RADIUS) continue;
 
-        if (crate.kind === 'health') {
-          p.char.hp = Math.min(JORBE_MAX_HP, p.char.hp + CRATE_HEAL_AMOUNT);
-        } else if (crate.weaponId) {
-          const cur = p.ammo[crate.weaponId];
-          if (cur !== null && cur !== undefined) p.ammo[crate.weaponId] = cur + CRATE_AMMO_REFILL;
-        }
-
-        this.crates = this.crates.filter((c) => c.id !== crate.id);
-        this.sink.toAll('cratePicked', { id: crate.id, playerId: p.id, kind: crate.kind });
+        this.applyCratePickup(crate, p.id);
         break;
+      }
+    }
+  }
+
+  /** Da o efeito do engradado (vida ou municao) a um jogador e tira a caixa do mapa. */
+  private applyCratePickup(crate: CrateDef, playerId: string): void {
+    const p = this.players.get(playerId);
+    if (!p) return;
+
+    if (crate.kind === 'health') {
+      p.char.hp = Math.min(JORBE_MAX_HP, p.char.hp + CRATE_HEAL_AMOUNT);
+    } else if (crate.weaponId) {
+      const cur = p.ammo[crate.weaponId];
+      if (cur !== null && cur !== undefined) p.ammo[crate.weaponId] = cur + CRATE_AMMO_REFILL;
+    }
+
+    this.crates = this.crates.filter((c) => c.id !== crate.id);
+    this.sink.toAll('cratePicked', { id: crate.id, playerId, kind: crate.kind });
+  }
+
+  /**
+   * Um tiro que estoura perto o suficiente de um engradado "acerta" ele —
+   * quem atirou fica com o efeito, como se tivesse pego andando.
+   */
+  private claimCratesFromExplosions(shots: ShotInit[], events: SimEvent[]): void {
+    if (this.crates.length === 0) return;
+
+    const shotOwner = new Map<number, string>();
+    for (const s of shots) shotOwner.set(s.id, s.ownerId);
+
+    for (const e of events) {
+      if (e.kind !== 'explosion' || this.crates.length === 0) continue;
+      const ownerId = shotOwner.get(e.shotId);
+      if (!ownerId) continue;
+
+      for (const crate of [...this.crates]) {
+        const dx = crate.x - e.x;
+        const dy = crate.y - e.y;
+        if (Math.sqrt(dx * dx + dy * dy) > e.radius) continue;
+        this.applyCratePickup(crate, ownerId);
       }
     }
   }
@@ -514,7 +575,7 @@ export class MatchEngine {
 
       const weapon = pickBotWeapon(bot.ammo, this.botRng);
       const shot = solveBotShot(bot.char.x, bot.char.y, target.char.x, target.char.y, this.wind, this.botRng);
-      this.applyAim(botId, { angle: shot.angle, power: shot.power, weaponId: weapon.id, fire: true });
+      this.applyAim(botId, { angle: shot.angle, power: shot.power, weaponId: weapon.id, fire: true, shield: false });
     }
   }
 
@@ -522,13 +583,140 @@ export class MatchEngine {
   // Fase de resolucao
   // -------------------------------------------------------------------------
 
-  private runResolve(): void {
-    const plan = this.simulateResolution();
+  /** Monta os tiros a partir da mira de cada jogador — trabalho O(jogadores), barato o suficiente pra rodar de uma vez. */
+  private beginResolve(): void {
+    const chars = this.order.map((id) => this.players.get(id)!.char);
+    const shots: ShotInit[] = [];
+    const projectiles: Projectile[] = [];
+    const shielded: string[] = [];
+
+    // Ordem estavel: dois servidores com a mesma entrada produzem o mesmo plano.
+    for (const id of this.order) {
+      const p = this.players.get(id)!;
+      const aim = p.aim;
+      if (!aim || !aim.fire || !p.char.alive) continue;
+
+      // Escudo e independente da arma escolhida — arma antes de processar o
+      // tiro, pra proteger inclusive contra explosoes do proprio round.
+      if (aim.shield) {
+        const shieldAmmo = p.ammo.escudo;
+        if (shieldAmmo === null || shieldAmmo === undefined || shieldAmmo > 0) {
+          if (shieldAmmo !== null && shieldAmmo !== undefined) p.ammo.escudo = shieldAmmo - 1;
+          p.char.shielded = true;
+          shielded.push(p.id);
+        }
+      }
+
+      // Seguranca: um cliente nunca deveria mandar uma arma defensiva como
+      // arma de tiro (o escudo agora e ativado via `aim.shield`, nao aqui).
+      if (getWeapon(aim.weaponId).defensive) continue;
+
+      const ammo = p.ammo[aim.weaponId];
+      if (ammo !== null && ammo !== undefined && ammo <= 0) continue;
+      if (ammo !== null && ammo !== undefined) p.ammo[aim.weaponId] = ammo - 1;
+
+      const speed = aim.power * POWER_TO_SPEED;
+      // Unico ponto do jogo que usa cos/sin: o resultado ja viaja pronto no
+      // plano, entao o cliente nunca precisa reproduzir essa conta.
+      const rad = (aim.angle * Math.PI) / 180;
+      const dirX = Math.cos(rad);
+      const dirY = -Math.sin(rad);
+      // Tiro mais vertical (perto de 90 graus, lance mais dificil/arriscado)
+      // causa mais dano que um tiro rasteiro (perto de 0/180) — de 0.8x a
+      // 1.3x, escalado por sin(angulo) que ja calculamos aqui do mesmo jeito.
+      const angleBonus = 0.8 + 0.5 * Math.abs(dirY);
+
+      const muzzle = JORBE_HEIGHT * 0.55 + 6;
+      const shot: ShotInit = {
+        id: this.nextShotId++,
+        ownerId: p.id,
+        weaponId: aim.weaponId,
+        x: p.char.x + dirX * muzzle,
+        y: p.char.y - JORBE_HEIGHT / 2 + dirY * muzzle,
+        vx: dirX * speed,
+        vy: dirY * speed,
+      };
+      shots.push(shot);
+      projectiles.push({
+        id: shot.id,
+        ownerId: shot.ownerId,
+        weaponId: shot.weaponId,
+        x: shot.x,
+        y: shot.y,
+        vx: shot.vx,
+        vy: shot.vy,
+        age: 0,
+        dead: false,
+        angleBonus,
+      });
+    }
 
     this.phase = 'resolve';
     this.phaseElapsedMs = 0;
+    this.resolving = { chars, shots, projectiles, events: [], shielded, ticks: 0 };
+  }
+
+  /**
+   * Processa um lote limitado de ticks da resolucao em andamento — chamado a
+   * cada update() enquanto `resolving` existir. So quando a fisica assentar
+   * (ou bater no teto de seguranca) e que monta e transmite o plano final.
+   */
+  private advanceResolve(): void {
+    const r = this.resolving;
+    if (!r) return;
+
+    const budget = Math.min(MatchEngine.RESOLVE_TICKS_PER_UPDATE, PHASE_RESOLVE_MAX_TICKS - r.ticks);
+    for (let i = 0; i < budget; i++) {
+      stepProjectiles(this.terrain, r.projectiles, r.chars, this.wind, TICK_DT, r.ticks, r.events);
+      for (const c of r.chars) {
+        stepCharacter(this.terrain, c, NO_INPUT, TICK_DT, r.ticks, r.events);
+      }
+      r.ticks++;
+      if (simSettled(r.projectiles, r.chars) || r.ticks >= PHASE_RESOLVE_MAX_TICKS) {
+        this.finishResolve();
+        return;
+      }
+    }
+  }
+
+  /** Assentou (ou bateu o teto): monta o ResolutionPlan final e transmite pra sala. */
+  private finishResolve(): void {
+    const r = this.resolving;
+    if (!r) return;
+    this.resolving = null;
+
+    for (const e of r.events) {
+      if (e.kind === 'explosion') {
+        this.carves.push({ x: e.x, y: e.y, r: getWeapon(e.weaponId).radius });
+      } else if (e.kind === 'death') {
+        this.noteDeath(e.playerId);
+      }
+    }
+    this.claimCratesFromExplosions(r.shots, r.events);
+
+    const plan: ResolutionPlan = {
+      round: this.round,
+      wind: this.wind,
+      shots: r.shots,
+      events: r.events,
+      totalTicks: r.ticks,
+      finalStates: r.chars.map((c) => ({
+        id: c.id,
+        x: c.x,
+        y: c.y,
+        vx: c.vx,
+        vy: c.vy,
+        onGround: c.onGround,
+        facing: c.facing,
+        hp: c.hp,
+        alive: c.alive,
+      })),
+      shielded: r.shielded,
+    };
+
     // O cliente reproduz o plano em tempo real; damos meio segundo de folga
     // para a animacao terminar antes de trocar de fase.
+    this.phaseElapsedMs = 0;
     this.phaseDurationMs = (plan.totalTicks / 60) * 1000 + 500;
 
     this.attributeStats(plan);
@@ -565,100 +753,6 @@ export class MatchEngine {
         if (stat) stat.kills += 1;
       }
     }
-  }
-
-  private simulateResolution(): ResolutionPlan {
-    const chars = this.order.map((id) => this.players.get(id)!.char);
-    const shots: ShotInit[] = [];
-    const projectiles: Projectile[] = [];
-    const shielded: string[] = [];
-
-    // Ordem estavel: dois servidores com a mesma entrada produzem o mesmo plano.
-    for (const id of this.order) {
-      const p = this.players.get(id)!;
-      const aim = p.aim;
-      if (!aim || !aim.fire || !p.char.alive) continue;
-
-      const ammo = p.ammo[aim.weaponId];
-      if (ammo !== null && ammo !== undefined && ammo <= 0) continue;
-      if (ammo !== null && ammo !== undefined) p.ammo[aim.weaponId] = ammo - 1;
-
-      // Escudo e defensivo: nao cria projetil nenhum, so marca o personagem
-      // como protegido contra qualquer explosao que acertar nesta rodada.
-      if (getWeapon(aim.weaponId).defensive) {
-        p.char.shielded = true;
-        shielded.push(p.id);
-        continue;
-      }
-
-      const speed = aim.power * POWER_TO_SPEED;
-      // Unico ponto do jogo que usa cos/sin: o resultado ja viaja pronto no
-      // plano, entao o cliente nunca precisa reproduzir essa conta.
-      const rad = (aim.angle * Math.PI) / 180;
-      const dirX = Math.cos(rad);
-      const dirY = -Math.sin(rad);
-
-      const muzzle = JORBE_HEIGHT * 0.55 + 6;
-      const shot: ShotInit = {
-        id: this.nextShotId++,
-        ownerId: p.id,
-        weaponId: aim.weaponId,
-        x: p.char.x + dirX * muzzle,
-        y: p.char.y - JORBE_HEIGHT / 2 + dirY * muzzle,
-        vx: dirX * speed,
-        vy: dirY * speed,
-      };
-      shots.push(shot);
-      projectiles.push({
-        id: shot.id,
-        ownerId: shot.ownerId,
-        weaponId: shot.weaponId,
-        x: shot.x,
-        y: shot.y,
-        vx: shot.vx,
-        vy: shot.vy,
-        age: 0,
-        dead: false,
-      });
-    }
-
-    const events: SimEvent[] = [];
-    let ticks = 0;
-    for (; ticks < PHASE_RESOLVE_MAX_TICKS; ticks++) {
-      stepProjectiles(this.terrain, projectiles, chars, this.wind, TICK_DT, ticks, events);
-      for (const c of chars) {
-        stepCharacter(this.terrain, c, NO_INPUT, TICK_DT, ticks, events);
-      }
-      if (simSettled(projectiles, chars)) break;
-    }
-
-    for (const e of events) {
-      if (e.kind === 'explosion') {
-        this.carves.push({ x: e.x, y: e.y, r: getWeapon(e.weaponId).radius });
-      } else if (e.kind === 'death') {
-        this.noteDeath(e.playerId);
-      }
-    }
-
-    return {
-      round: this.round,
-      wind: this.wind,
-      shots,
-      events,
-      totalTicks: ticks + 1,
-      finalStates: chars.map((c) => ({
-        id: c.id,
-        x: c.x,
-        y: c.y,
-        vx: c.vx,
-        vy: c.vy,
-        onGround: c.onGround,
-        facing: c.facing,
-        hp: c.hp,
-        alive: c.alive,
-      })),
-      shielded,
-    };
   }
 
   // -------------------------------------------------------------------------

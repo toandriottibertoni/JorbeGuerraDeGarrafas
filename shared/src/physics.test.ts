@@ -130,7 +130,7 @@ test('explosao causa mais dano no epicentro que na borda', () => {
     vx: 0,
     vy: 0,
     age: 0,
-    dead: false,
+    dead: false, angleBonus: 1,
   };
 
   const ev: SimEvent[] = [];
@@ -139,6 +139,35 @@ test('explosao causa mais dano no epicentro que na borda', () => {
   assert.ok(perto.hp < longe.hp, `epicentro ${perto.hp} deveria doer mais que borda ${longe.hp}`);
   assert.ok(longe.hp < JORBE_MAX_HP, 'quem esta no raio tambem toma dano');
   assert.ok(ev.some((e) => e.kind === 'explosion'));
+});
+
+test('angleBonus do projetil escala o dano da explosao', () => {
+  const mk = (angleBonus: number): Projectile => ({
+    id: 1,
+    ownerId: 'x',
+    weaponId: 'bazuca',
+    x: 1000,
+    y: 500 - 15,
+    vx: 0,
+    vy: 0,
+    age: 0,
+    dead: false,
+    angleBonus,
+  });
+
+  const t1 = Terrain.generate('praia', 5);
+  const alvoBaixo = makeChar('a', 1000, 500);
+  explode(t1, mk(0.8), [alvoBaixo], 0, []);
+
+  const t2 = Terrain.generate('praia', 5);
+  const alvoAlto = makeChar('a', 1000, 500);
+  explode(t2, mk(1.3), [alvoAlto], 0, []);
+
+  const danoBaixo = JORBE_MAX_HP - alvoBaixo.hp;
+  const danoAlto = JORBE_MAX_HP - alvoAlto.hp;
+  assert.ok(danoAlto > danoBaixo, `angleBonus maior deveria doer mais: ${danoAlto} vs ${danoBaixo}`);
+  // 1.3/0.8 = 1.625x — a mesma proporcao tem que aparecer no dano.
+  assert.ok(Math.abs(danoAlto / danoBaixo - 1.3 / 0.8) < 0.05, `proporcao errada: ${danoAlto}/${danoBaixo}`);
 });
 
 test('explosao empurra o alvo para longe do centro', () => {
@@ -153,7 +182,7 @@ test('explosao empurra o alvo para longe do centro', () => {
     vx: 0,
     vy: 0,
     age: 0,
-    dead: false,
+    dead: false, angleBonus: 1,
   };
 
   explode(t, p, [c], 0, []);
@@ -175,7 +204,7 @@ test('escudo bloqueia dano e empurrao da explosao por inteiro', () => {
     vx: 0,
     vy: 0,
     age: 0,
-    dead: false,
+    dead: false, angleBonus: 1,
   };
 
   const ev: SimEvent[] = [];
@@ -201,7 +230,7 @@ test('explosao fora do raio nao encosta em ninguem', () => {
     vx: 0,
     vy: 0,
     age: 0,
-    dead: false,
+    dead: false, angleBonus: 1,
   };
 
   explode(t, p, [c], 0, []);
@@ -225,7 +254,7 @@ test('dano zera vida e emite morte uma unica vez', () => {
     vx: 0,
     vy: 0,
     age: 0,
-    dead: false,
+    dead: false, angleBonus: 1,
   });
 
   explode(t, mk(), [c], 0, ev);
@@ -249,7 +278,7 @@ test('projetil explode ao bater no terreno e abre cratera', () => {
     vx: 0,
     vy: 200,
     age: 0,
-    dead: false,
+    dead: false, angleBonus: 1,
   };
 
   const ev: SimEvent[] = [];
@@ -266,11 +295,11 @@ test('dois projeteis que se cruzam no ar explodem juntos', () => {
   const t = Terrain.generate('praia', 5);
   const a: Projectile = {
     id: 1, ownerId: 'a', weaponId: 'tampinha',
-    x: 1000, y: 300, vx: 120, vy: 0, age: 0, dead: false,
+    x: 1000, y: 300, vx: 120, vy: 0, age: 0, dead: false, angleBonus: 1,
   };
   const b: Projectile = {
     id: 2, ownerId: 'b', weaponId: 'tampinha',
-    x: 1060, y: 300, vx: -120, vy: 0, age: 0, dead: false,
+    x: 1060, y: 300, vx: -120, vy: 0, age: 0, dead: false, angleBonus: 1,
   };
 
   const ev: SimEvent[] = [];
@@ -287,7 +316,7 @@ test('projetil nao explode no dono ao sair do cano', () => {
   const dono = makeChar('dono', 1000, 400);
   const p: Projectile = {
     id: 1, ownerId: 'dono', weaponId: 'tampinha',
-    x: 1000, y: 400 - 15, vx: 300, vy: -100, age: 0, dead: false,
+    x: 1000, y: 400 - 15, vx: 300, vy: -100, age: 0, dead: false, angleBonus: 1,
   };
 
   const ev: SimEvent[] = [];
@@ -302,7 +331,7 @@ test('vento empurra o projetil para o lado', () => {
   const base = (wind: number): number => {
     const p: Projectile = {
       id: 1, ownerId: 'x', weaponId: 'bazuca',
-      x: 1000, y: 200, vx: 0, vy: -50, age: 0, dead: false,
+      x: 1000, y: 200, vx: 0, vy: -50, age: 0, dead: false, angleBonus: 1,
     };
     for (let i = 0; i < 30; i++) stepProjectiles(t, [p], [], wind, TICK_DT, i, []);
     return p.x;
@@ -318,7 +347,7 @@ test('granada quica em vez de explodir no primeiro toque', () => {
   const ground = t.groundBelow(x, 0);
   const p: Projectile = {
     id: 1, ownerId: 'x', weaponId: 'granada',
-    x, y: ground - 60, vx: 0, vy: 260, age: 0, dead: false,
+    x, y: ground - 60, vx: 0, vy: 260, age: 0, dead: false, angleBonus: 1,
   };
 
   const ev: SimEvent[] = [];
@@ -336,7 +365,7 @@ test('granada detona sozinha quando o pavio acaba', () => {
   const t = Terrain.generate('praia', 5);
   const p: Projectile = {
     id: 1, ownerId: 'x', weaponId: 'granada',
-    x: 1500, y: 200, vx: 0, vy: 0, age: 0, dead: false,
+    x: 1500, y: 200, vx: 0, vy: 0, age: 0, dead: false, angleBonus: 1,
   };
 
   const ev: SimEvent[] = [];
@@ -354,7 +383,7 @@ test('simulacao inteira e reprodutivel a partir das mesmas condicoes', () => {
     const alvo = makeChar('alvo', 1200, t.groundBelow(1200, 0) - 1);
     const p: Projectile = {
       id: 1, ownerId: 'x', weaponId: 'bazuca',
-      x: 1000, y: 300, vx: 180, vy: -120, age: 0, dead: false,
+      x: 1000, y: 300, vx: 180, vy: -120, age: 0, dead: false, angleBonus: 1,
     };
     const ev: SimEvent[] = [];
     for (let i = 0; i < 400; i++) {

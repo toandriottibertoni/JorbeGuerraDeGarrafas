@@ -59,6 +59,12 @@ export interface Projectile {
   /** Segundos de vida, para o pavio. */
   age: number;
   dead: boolean;
+  /**
+   * Multiplicador de dano pelo angulo de lancamento (calculado uma vez no
+   * servidor, onde e o unico lugar que ja usa Math.sin — aqui so multiplica,
+   * o que continua determinista). Tiros mais verticais causam mais dano.
+   */
+  angleBonus: number;
 }
 
 export type DamageCause = 'blast' | 'fall' | 'void';
@@ -325,7 +331,7 @@ export function explode(
     // de recalcular o impulso, entao os dois lados nunca divergem.
     events.push({ kind: 'knockback', tick, playerId: c.id, vx: c.vx, vy: c.vy });
 
-    applyDamage(c, Math.round(w.damage * falloff), 'blast', tick, events);
+    applyDamage(c, Math.round(w.damage * falloff * p.angleBonus), 'blast', tick, events);
   }
 }
 

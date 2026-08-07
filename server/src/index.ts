@@ -19,6 +19,13 @@ async function main(): Promise<void> {
   const httpServer = createServer(app);
   const io = new Server(httpServer, {
     cors: { origin: env.clientOrigin, credentials: true },
+    // Comprime mensagens WebSocket acima de 1KB — o plano de uma rodada
+    // caotica (muitos eventos de explosao/dano) pode passar disso facil, e
+    // JSON repetitivo comprime bem. Mensagens pequenas (snapshot de posicao)
+    // ficam de fora: o overhead de comprimir supera o que se economiza.
+    perMessageDeflate: {
+      threshold: 1024,
+    },
   });
 
   createGateway(io);

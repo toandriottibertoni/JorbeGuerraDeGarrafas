@@ -194,6 +194,8 @@ export interface AimMessage {
   weaponId: string;
   /** false = passa a vez sem atirar. */
   fire: boolean;
+  /** Armar o escudo pra esta rodada — independente da arma escolhida, ainda atira normalmente. */
+  shield?: boolean;
 }
 
 /**
