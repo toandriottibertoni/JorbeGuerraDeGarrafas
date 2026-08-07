@@ -277,8 +277,8 @@ export function drawWindIndicator(ctx: CanvasRenderingContext2D, viewW: number, 
 
   ctx.save();
   ctx.textAlign = 'center';
-  ctx.font = 'bold 10px Georgia, serif';
-  ctx.fillStyle = 'rgba(244,228,193,0.65)';
+  ctx.font = 'bold 12px Georgia, serif';
+  ctx.fillStyle = 'rgba(244,228,193,0.7)';
   ctx.fillText('VENTO', cx, cy - 16);
 
   if (calm) {
@@ -320,9 +320,9 @@ export function drawWindIndicator(ctx: CanvasRenderingContext2D, viewW: number, 
     ctx.stroke();
   }
 
-  ctx.font = 'bold 13px Georgia, serif';
+  ctx.font = 'bold 16px Georgia, serif';
   ctx.fillStyle = calm ? PALETTE.cream : mag > 0.7 ? PALETTE.red : PALETTE.crust;
-  ctx.fillText(calm ? 'calmo' : `${Math.abs(wind).toFixed(0)}`, cx, cy + 26);
+  ctx.fillText(calm ? 'calmo' : `${Math.abs(wind).toFixed(0)}`, cx, cy + 27);
   ctx.textAlign = 'left';
   ctx.restore();
 }
@@ -398,17 +398,6 @@ export function drawJorbe(ctx: CanvasRenderingContext2D, s: JorbeDrawState): voi
   ctx.strokeStyle = INK;
   ctx.lineJoin = 'round';
 
-  // Tenis — balancam fora de fase, levantando levemente quando avancam.
-  ctx.fillStyle = PALETTE.red;
-  ctx.beginPath();
-  ctx.ellipse(-4 + legL * 4, -2 - Math.max(0, legL) * 2.5, 6, 3.5, 0, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.stroke();
-  ctx.beginPath();
-  ctx.ellipse(5 + legR * 4, -2 - Math.max(0, legR) * 2.5, 6, 3.5, 0, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.stroke();
-
   // Corpo de garrafa
   ctx.fillStyle = PALETTE.bottle;
   ctx.beginPath();
@@ -419,6 +408,19 @@ export function drawJorbe(ctx: CanvasRenderingContext2D, s: JorbeDrawState): voi
   ctx.lineTo(4, -h * 0.72);
   ctx.bezierCurveTo(w / 2 - 2, -h * 0.62, w / 2 + 1, -h * 0.45, w / 2 - 2, -5);
   ctx.closePath();
+  ctx.fill();
+  ctx.stroke();
+
+  // Tenis — desenhados POR CIMA do corpo (senao o pe levantado no passo fica
+  // parcialmente coberto pela garrafa). Balancam fora de fase, levantando
+  // levemente quando avancam.
+  ctx.fillStyle = PALETTE.red;
+  ctx.beginPath();
+  ctx.ellipse(-4 + legL * 4, -2 - Math.max(0, legL) * 2.5, 6, 3.5, 0, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.ellipse(5 + legR * 4, -2 - Math.max(0, legR) * 2.5, 6, 3.5, 0, 0, Math.PI * 2);
   ctx.fill();
   ctx.stroke();
 
@@ -578,6 +580,7 @@ export function drawCrate(
   weaponId: string | undefined,
   weaponColor: string,
   bobPhase: number,
+  showParachute: boolean,
 ): void {
   const sway = Math.sin(bobPhase) * 4;
   const size = 26;
@@ -585,28 +588,30 @@ export function drawCrate(
   ctx.save();
   ctx.translate(x, y - size);
 
-  // Cordas do paraquedas
-  ctx.strokeStyle = 'rgba(244,228,193,0.7)';
-  ctx.lineWidth = 1.2;
-  ctx.beginPath();
-  ctx.moveTo(-size * 0.35, -2);
-  ctx.lineTo(sway * 0.6, -size * 1.3);
-  ctx.moveTo(size * 0.35, -2);
-  ctx.lineTo(sway * 0.6, -size * 1.3);
-  ctx.stroke();
+  if (showParachute) {
+    // Cordas do paraquedas
+    ctx.strokeStyle = 'rgba(244,228,193,0.7)';
+    ctx.lineWidth = 1.2;
+    ctx.beginPath();
+    ctx.moveTo(-size * 0.35, -2);
+    ctx.lineTo(sway * 0.6, -size * 1.3);
+    ctx.moveTo(size * 0.35, -2);
+    ctx.lineTo(sway * 0.6, -size * 1.3);
+    ctx.stroke();
 
-  // Paraquedas
-  ctx.save();
-  ctx.translate(sway * 0.6, -size * 1.3);
-  ctx.fillStyle = PALETTE.crust;
-  ctx.strokeStyle = INK;
-  ctx.lineWidth = 1.5;
-  ctx.beginPath();
-  ctx.arc(0, 0, size * 0.6, Math.PI, 0);
-  ctx.closePath();
-  ctx.fill();
-  ctx.stroke();
-  ctx.restore();
+    // Paraquedas — some pouco depois de pousar.
+    ctx.save();
+    ctx.translate(sway * 0.6, -size * 1.3);
+    ctx.fillStyle = PALETTE.crust;
+    ctx.strokeStyle = INK;
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.arc(0, 0, size * 0.6, Math.PI, 0);
+    ctx.closePath();
+    ctx.fill();
+    ctx.stroke();
+    ctx.restore();
+  }
 
   // Caixa
   ctx.fillStyle = PALETTE.dirt;

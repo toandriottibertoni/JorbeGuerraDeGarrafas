@@ -562,3 +562,198 @@ test('municao de arma infinita nao quebra ao "reabastecer"', () => {
 
   assert.equal(p0.ammo.tampinha, null, 'tampinha e infinita, tem que continuar null');
 });
+
+// ---------------------------------------------------------------------------
+// Jorbots — andam e atiram de verdade
+// ---------------------------------------------------------------------------
+
+function makeMixedMatch(humans: number, bots: number, seed = 2024): { engine: MatchEngine; sink: RecordingSink } {
+  const sink = new RecordingSink();
+  const seeds = [
+    ...Array.from({ length: humans }, (_, i) => ({ id: `h${i}`, nick: `Humano ${i}`, isBot: false })),
+    ...Array.from({ length: bots }, (_, i) => ({ id: `b${i}`, nick: `Jorbot ${i}`, isBot: true })),
+  ];
+  const engine = new MatchEngine('fabrica', seed, seeds, sink);
+  return { engine, sink };
+}
+
+test('bot anda de verdade durante o preparo — a posicao muda sozinha', () => {
+  const { engine } = makeMixedMatch(1, 1);
+  engine.start();
+
+  const bot = poke(engine).players.get('b0');
+  const x0 = bot.char.x;
+  advance(engine, 3);
+  const x1 = bot.char.x;
+
+  assert.notEqual(x0, x1, `bot deveria ter andado sozinho, ficou parado em ${x0}`);
+});
+
+test('bot atira antes do fim da rodada, mirando em quem esta vivo', () => {
+  const { engine, sink } = makeMixedMatch(1, 1);
+  engine.start();
+  advance(engine, 45); // 2 jogadores -> preparo de 15s, sobra folga de sobra
+
+  const plans = sink.eventsOf('roundResolve') as ResolutionPlan[];
+  assert.ok(plans.length >= 1, 'deveria ter resolvido pelo menos uma rodada');
+  const botShots = plans[0].shots.filter((s) => s.ownerId === 'b0');
+  assert.equal(botShots.length, 1, 'o bot deveria ter atirado exatamente uma vez na rodada');
+});
+
+test('com varios bots, cada um atira no maximo uma vez por rodada', () => {
+  const { engine, sink } = makeMixedMatch(1, 4);
+  engine.start();
+  advance(engine, 45);
+
+  const plan = (sink.eventsOf('roundResolve') as ResolutionPlan[])[0];
+  for (const botId of ['b0', 'b1', 'b2', 'b3']) {
+    const shots = plan.shots.filter((s) => s.ownerId === botId);
+    assert.ok(shots.length <= 1, `${botId} atirou ${shots.length} vezes numa rodada so`);
+  }
+});
+
+test('bot nunca aparece no painel de prontidao, mesmo atirando', () => {
+  const { engine, sink } = makeMixedMatch(1, 1);
+  engine.start();
+  advance(engine, 45);
+
+  const readies = sink.eventsOf('roundReady') as ReadyState[];
+  for (const r of readies) {
+    assert.ok(!r.ready.includes('b0'), 'bot nao pode contar pra prontidao mesmo tendo atirado');
+  }
+});
+
+test('bot respeita municao limitada — nunca atira arma que nao tem mais', () => {
+  const { engine, sink } = makeMixedMatch(1, 1);
+  engine.start();
+
+  // Forca o bot a so ter tampinha (infinita) disponivel.
+  const bot = poke(engine).players.get('b0');
+  bot.ammo.bazuca = 0;
+  bot.ammo.granada = 0;
+
+  advance(engine, 45);
+  const plan = (sink.eventsOf('roundResolve') as ResolutionPlan[])[0];
+  const botShot = plan.shots.find((s) => s.ownerId === 'b0');
+  assert.ok(botShot, 'bot ainda deveria atirar, so que so pode ser de tampinha');
+  assert.equal(botShot!.weaponId, 'tampinha');
+});
+
+// ---------------------------------------------------------------------------
+// Atribuicao de dano/abates — painel de placar
+// ---------------------------------------------------------------------------
+
+/** Plano sintetico: testar attributeStats isolado da fisica real e muito mais
+ *  confiavel do que procurar uma seed que por acaso acerta um tiro em alguem. */
+function fakePlan(shots: ResolutionPlan['shots'], events: ResolutionPlan['events']): ResolutionPlan {
+  return { round: 1, wind: 0, shots, events, totalTicks: 10, finalStates: [] };
+}
+
+test('dano de explosao e creditado a quem atirou', () => {
+  const { engine } = makeMatch(2);
+  engine.start();
+
+  const plan = fakePlan(
+    [{ id: 1, ownerId: 'p0', weaponId: 'bazuca', x: 0, y: 0, vx: 0, vy: 0 }],
+    [
+      { kind: 'explosion', tick: 5, shotId: 1, x: 100, y: 100, weaponId: 'bazuca', radius: 40 },
+      { kind: 'damage', tick: 5, playerId: 'p1', amount: 38, hp: 62, cause: 'blast' },
+    ],
+  );
+  poke(engine).attributeStats(plan);
+
+  const stats = poke(engine).matchStats as Map<string, { damage: number; kills: number }>;
+  assert.equal(stats.get('p0')!.damage, 38, 'dano vai pra quem atirou, nao pra vitima');
+  assert.equal(stats.get('p1')!.damage, 0);
+  assert.equal(stats.get('p0')!.kills, 0);
+});
+
+test('abate e creditado a quem atirou, e nunca a quem se suicidou', () => {
+  const { engine } = makeMatch(3);
+  engine.start();
+
+  const plan = fakePlan(
+    [
+      { id: 1, ownerId: 'p0', weaponId: 'bazuca', x: 0, y: 0, vx: 0, vy: 0 },
+      { id: 2, ownerId: 'p2', weaponId: 'bazuca', x: 0, y: 0, vx: 0, vy: 0 },
+    ],
+    [
+      // p0 mata p1: abate valido.
+      { kind: 'explosion', tick: 5, shotId: 1, x: 100, y: 100, weaponId: 'bazuca', radius: 40 },
+      { kind: 'damage', tick: 5, playerId: 'p1', amount: 100, hp: 0, cause: 'blast' },
+      { kind: 'death', tick: 5, playerId: 'p1', cause: 'blast' },
+      // p2 se explode e morre: dano conta, abate nao.
+      { kind: 'explosion', tick: 8, shotId: 2, x: 200, y: 200, weaponId: 'bazuca', radius: 40 },
+      { kind: 'damage', tick: 8, playerId: 'p2', amount: 100, hp: 0, cause: 'blast' },
+      { kind: 'death', tick: 8, playerId: 'p2', cause: 'blast' },
+    ],
+  );
+  poke(engine).attributeStats(plan);
+
+  const stats = poke(engine).matchStats as Map<string, { damage: number; kills: number }>;
+  assert.equal(stats.get('p0')!.kills, 1, 'p0 matou p1, tem que contar abate');
+  assert.equal(stats.get('p2')!.kills, 0, 'suicidio nunca conta como abate');
+  assert.equal(stats.get('p2')!.damage, 100, 'dano em si mesmo ainda conta no total de dano');
+});
+
+test('dano e morte por queda/vazio nunca sao creditados a ninguem', () => {
+  const { engine } = makeMatch(2);
+  engine.start();
+
+  const plan = fakePlan(
+    [],
+    [
+      { kind: 'damage', tick: 5, playerId: 'p1', amount: 10, hp: 90, cause: 'fall' },
+      { kind: 'death', tick: 6, playerId: 'p1', cause: 'void' },
+    ],
+  );
+  poke(engine).attributeStats(plan);
+
+  const stats = poke(engine).matchStats as Map<string, { damage: number; kills: number }>;
+  for (const [, s] of stats) {
+    assert.equal(s.damage, 0);
+    assert.equal(s.kills, 0);
+  }
+});
+
+test('estatisticas sao cumulativas entre rodadas', () => {
+  const { engine } = makeMatch(2);
+  engine.start();
+
+  poke(engine).attributeStats(
+    fakePlan(
+      [{ id: 1, ownerId: 'p0', weaponId: 'bazuca', x: 0, y: 0, vx: 0, vy: 0 }],
+      [
+        { kind: 'explosion', tick: 5, shotId: 1, x: 100, y: 100, weaponId: 'bazuca', radius: 40 },
+        { kind: 'damage', tick: 5, playerId: 'p1', amount: 20, hp: 80, cause: 'blast' },
+      ],
+    ),
+  );
+  poke(engine).attributeStats(
+    fakePlan(
+      [{ id: 2, ownerId: 'p0', weaponId: 'bazuca', x: 0, y: 0, vx: 0, vy: 0 }],
+      [
+        { kind: 'explosion', tick: 5, shotId: 2, x: 100, y: 100, weaponId: 'bazuca', radius: 40 },
+        { kind: 'damage', tick: 5, playerId: 'p1', amount: 15, hp: 65, cause: 'blast' },
+      ],
+    ),
+  );
+
+  const stats = poke(engine).matchStats as Map<string, { damage: number; kills: number }>;
+  assert.equal(stats.get('p0')!.damage, 35, 'dano acumula rodada apos rodada, nao reseta');
+});
+
+test('matchStats e transmitido pra sala junto com cada resolucao de rodada', () => {
+  const { engine, sink } = makeMatch(2);
+  engine.start();
+  advance(engine, 45);
+
+  const broadcasts = sink.eventsOf('matchStats') as { playerId: string; damage: number; kills: number }[][];
+  assert.ok(broadcasts.length >= 1, 'deveria ter transmitido matchStats ao resolver a rodada');
+  const first = broadcasts[0];
+  assert.equal(first.length, 2, 'lista deve ter uma entrada por jogador');
+  for (const s of first) {
+    assert.ok(['p0', 'p1'].includes(s.playerId));
+    assert.ok(typeof s.damage === 'number' && typeof s.kills === 'number');
+  }
+});

@@ -21,6 +21,7 @@ import {
   type MatchEnd,
   type MatchStart,
   type MoveInput,
+  type PlayerStat,
   type ReadyState,
   type ResolutionPlan,
   type RoundPrep,
@@ -134,7 +135,7 @@ const WEAPON_WEIGHT: Record<string, 'light' | 'medium' | 'heavy'> = {
  */
 export class MatchScene {
   /** Altura do painel inferior do HUD — geometria compartilhada por desenho e clique. */
-  private static readonly HUD_H = 108;
+  private static readonly HUD_H = 124;
 
   private readonly canvas: HTMLCanvasElement;
   private readonly ctx: CanvasRenderingContext2D;
@@ -176,6 +177,10 @@ export class MatchScene {
   /** O que valia na rodada anterior — vento, e meu ultimo angulo/forca ajustados. */
   private history: { wind: number; angle: number; power: number } | null = null;
   private crates: CrateDef[] = [];
+  /** Quando (em this.clock) cada engradado apareceu — o paraquedas some pouco depois. */
+  private crateSpawnClock = new Map<number, number>();
+  /** Dano/abates acumulados da partida inteira, por jogador — pro painel flutuante. */
+  private stats = new Map<string, { damage: number; kills: number }>();
 
   private playback: Playback | null = null;
   private playAcc = 0;
@@ -253,8 +258,16 @@ export class MatchScene {
     s.on('roundReady', (data: ReadyState) => this.onRoundReady(data));
     s.on('crates', (list: CrateDef[]) => {
       this.crates = list;
+      // Toda a leva e nova (o servidor sempre manda a lista completa) — todos
+      // acabaram de "cair", entao o paraquedas aparece do zero pra cada um.
+      const fresh = new Map<number, number>();
+      for (const c of list) fresh.set(c.id, this.clock);
+      this.crateSpawnClock = fresh;
     });
     s.on('cratePicked', (data: CratePicked) => this.onCratePicked(data));
+    s.on('matchStats', (list: PlayerStat[]) => {
+      this.stats = new Map(list.map((s) => [s.playerId, { damage: s.damage, kills: s.kills }]));
+    });
     s.on('roundResolve', (plan: ResolutionPlan) => this.onRoundResolve(plan));
     s.on('roundEnd', () => {
       this.phase = 'interval';
@@ -296,6 +309,10 @@ export class MatchScene {
     }
 
     this.crates = data.crates;
+    // Quem entra no meio da partida ve engradados ja pousados havia tempo —
+    // sem paraquedas.
+    this.crateSpawnClock = new Map(data.crates.map((c) => [c.id, -999]));
+    this.stats = new Map();
     this.finalResult = null;
     this.phase = 'interval';
     const self = this.players.get(this.ownId);
@@ -505,11 +522,11 @@ export class MatchScene {
   }
 
   private weaponCardRect(i: number): { x: number; y: number; w: number; h: number } {
-    return { x: 400 + i * 158, y: this.hudY + 14, w: 150, h: 54 };
+    return { x: 400 + i * 164, y: this.hudY + 14, w: 156, h: 62 };
   }
 
   private forceBarRect(): { x: number; y: number; w: number; h: number } {
-    return { x: 175, y: this.hudY + 38, w: 180, h: 12 };
+    return { x: 195, y: this.hudY + 44, w: 190, h: 14 };
   }
 
   private inRect(x: number, y: number, r: { x: number; y: number; w: number; h: number }): boolean {
@@ -556,18 +573,24 @@ export class MatchScene {
   }
 
   private onPointerDown = (e: PointerEvent): void => {
-    // Botao direito e sempre camera, em qualquer fase — sem ambiguidade
-    // com a mira, que fica inteira no esquerdo.
+    const canAdjust = this.phase === 'prep' && !this.aimLocked;
+
+    // Botao direito: mira em QUALQUER ponto do mapa — nao precisa acertar o
+    // Jorbe, o vetor de estilingue e calculado a partir dele de qualquer jeito.
     if (e.button === 2) {
-      this.dragging = true;
-      this.camFollowSelf = false;
-      this.lastPointer = { x: e.clientX, y: e.clientY };
+      if (!canAdjust) return;
+      const anchor = this.ownScreenAnchor();
+      if (anchor) {
+        this.aimDragging = true;
+        this.dragPointer = { x: e.clientX, y: e.clientY };
+        this.applyAimDrag(e.clientX, e.clientY);
+      }
       return;
     }
     if (e.button !== 0) return;
 
-    const canAdjust = this.phase === 'prep' && !this.aimLocked;
-
+    // Botao esquerdo: cartas de arma e barra de forca continuam sendo
+    // botoes normais de UI; fora delas, arrasta a camera.
     if (canAdjust) {
       for (let i = 0; i < WEAPONS.length; i++) {
         if (this.inRect(e.clientX, e.clientY, this.weaponCardRect(i))) {
@@ -580,19 +603,8 @@ export class MatchScene {
         this.setPowerFromClientX(e.clientX);
         return;
       }
-      // Esquerdo em QUALQUER ponto do mapa mira — nao precisa acertar o
-      // Jorbe, o vetor de estilingue e calculado a partir dele de qualquer jeito.
-      const anchor = this.ownScreenAnchor();
-      if (anchor) {
-        this.aimDragging = true;
-        this.dragPointer = { x: e.clientX, y: e.clientY };
-        this.applyAimDrag(e.clientX, e.clientY);
-        return;
-      }
     }
 
-    // Fora da fase de mira (ou sem Jorbe vivo pra mirar), o esquerdo tambem
-    // pode mover a camera — senao o jogador fica sem jeito de olhar o mapa.
     this.dragging = true;
     this.camFollowSelf = false;
     this.lastPointer = { x: e.clientX, y: e.clientY };
@@ -614,11 +626,17 @@ export class MatchScene {
   };
 
   private onPointerUp = (): void => {
+    // Soltar o mouse depois de mirar arrastando ja trava o tiro — nao precisa
+    // clicar em OK separado, o proprio gesto de soltar e o "atirar".
+    const wasAimDragging = this.aimDragging;
+
     this.dragging = false;
     this.lastPointer = null;
     this.forceDragging = false;
     this.aimDragging = false;
     this.dragPointer = null;
+
+    if (wasAimDragging) this.fire();
   };
 
   private onResize = (): void => {
@@ -1000,7 +1018,18 @@ export class MatchScene {
 
     for (const crate of this.crates) {
       const weapon = crate.weaponId ? getWeapon(crate.weaponId) : null;
-      drawCrate(ctx, crate.x, crate.y, crate.kind, crate.weaponId, weapon?.color ?? PALETTE.crust, this.clock * 1.4 + crate.id);
+      const spawnAt = this.crateSpawnClock.get(crate.id) ?? this.clock;
+      const showParachute = this.clock - spawnAt < 1.3;
+      drawCrate(
+        ctx,
+        crate.x,
+        crate.y,
+        crate.kind,
+        crate.weaponId,
+        weapon?.color ?? PALETTE.crust,
+        this.clock * 1.4 + crate.id,
+        showParachute,
+      );
     }
 
     for (const p of this.players.values()) {
@@ -1043,7 +1072,64 @@ export class MatchScene {
 
     this.drawHud();
     if (this.phase !== 'over') drawWindIndicator(ctx, this.cam.viewW, this.wind, WIND_MAX);
+    if (this.phase !== 'over') this.drawStatsPanel(ctx);
     drawFilmOverlay(ctx, this.cam.viewW, this.cam.viewH, this.clock);
+  }
+
+  /** Painel flutuante e transparente: quem mais deu dano e quem mais matou ate agora. */
+  private drawStatsPanel(ctx: CanvasRenderingContext2D): void {
+    if (this.round === 0) return;
+    const rows = [...this.players.values()]
+      .map((p) => ({ p, s: this.stats.get(p.id) ?? { damage: 0, kills: 0 } }))
+      .filter((r) => r.s.damage > 0 || r.s.kills > 0)
+      .sort((a, b) => b.s.damage - a.s.damage)
+      .slice(0, 6);
+    if (rows.length === 0) return;
+
+    const topDamageId = rows[0]!.p.id;
+    const topKillId = [...rows].sort((a, b) => b.s.kills - a.s.kills)[0]!;
+    const topKillsValue = topKillId.s.kills;
+
+    const w = 208;
+    const rowH = 22;
+    const h = 32 + rows.length * rowH;
+    // Canto inferior esquerdo, acima da barra do HUD — nunca colide com o
+    // minimapa/painel de prontidao (topo direito) nem com o vento (topo centro).
+    const x = 16;
+    const y = this.cam.viewH - MatchScene.HUD_H - h - 12;
+
+    ctx.save();
+    ctx.fillStyle = 'rgba(19,8,2,0.7)';
+    ctx.fillRect(x, y, w, h);
+    ctx.strokeStyle = PALETTE.crust;
+    ctx.lineWidth = 2;
+    ctx.strokeRect(x, y, w, h);
+
+    ctx.font = 'bold 13px Georgia, serif';
+    ctx.fillStyle = PALETTE.crust;
+    ctx.fillText('PLACAR', x + 10, y + 20);
+
+    rows.forEach((r, i) => {
+      const ry = y + 40 + i * rowH;
+      const isTopDamage = r.p.id === topDamageId;
+      const isTopKill = topKillsValue > 0 && r.p.id === topKillId.p.id;
+
+      ctx.font = '13px Georgia, serif';
+      ctx.fillStyle = r.p.id === this.ownId ? PALETTE.crust : PALETTE.cream;
+      ctx.fillText(r.p.nick.slice(0, 12), x + 10, ry);
+
+      ctx.textAlign = 'right';
+      ctx.font = isTopDamage ? 'bold 13px Georgia, serif' : '13px Georgia, serif';
+      ctx.fillStyle = isTopDamage ? PALETTE.red : 'rgba(244,228,193,0.8)';
+      ctx.fillText(`${Math.round(r.s.damage)} dmg`, x + w - 46, ry);
+
+      ctx.font = isTopKill ? 'bold 13px Georgia, serif' : '13px Georgia, serif';
+      ctx.fillStyle = isTopKill ? PALETTE.bottle : 'rgba(244,228,193,0.8)';
+      ctx.fillText(`${r.s.kills} abt`, x + w - 10, ry);
+      ctx.textAlign = 'left';
+    });
+
+    ctx.restore();
   }
 
   private drawProjectile(ctx: CanvasRenderingContext2D, p: PlaybackProjectile): void {
@@ -1112,48 +1198,48 @@ export class MatchScene {
     ctx.lineTo(this.cam.viewW, y);
     ctx.stroke();
 
-    ctx.font = '13px Georgia, serif';
+    ctx.font = '15px Georgia, serif';
     ctx.fillStyle = PALETTE.cream;
 
     // Tempo e rodada — pulsa e faz tique-taque nos ultimos segundos.
     ctx.save();
-    ctx.font = 'bold 22px Georgia, serif';
+    ctx.font = 'bold 27px Georgia, serif';
     ctx.fillStyle = this.remaining < 6 ? PALETTE.red : PALETTE.crust;
-    ctx.translate(18, y + 32);
+    ctx.translate(18, y + 36);
     const pulseScale = 1 + this.tickPulse * 0.4;
     ctx.scale(pulseScale, pulseScale);
     ctx.fillText(`${Math.ceil(this.remaining)}s`, 0, 0);
     ctx.restore();
-    ctx.font = '12px Georgia, serif';
+    ctx.font = '15px Georgia, serif';
     ctx.fillStyle = PALETTE.cream;
-    ctx.fillText(`Rodada ${this.round}`, 18, y + 50);
+    ctx.fillText(`Rodada ${this.round}`, 18, y + 58);
 
     // Vento
     const windDir = this.wind > 0 ? '>>>' : '<<<';
     ctx.fillText(
       `Vento ${Math.abs(this.wind).toFixed(0)} ${Math.abs(this.wind) < 1 ? '--' : windDir}`,
       18,
-      y + 70,
+      y + 80,
     );
 
     // Historico da rodada anterior — pra comparar antes de ajustar de novo.
     if (this.history) {
       const hDir = this.history.wind > 0 ? '>>>' : this.history.wind < 0 ? '<<<' : '--';
-      ctx.font = 'italic 10px Georgia, serif';
-      ctx.fillStyle = 'rgba(244,228,193,0.5)';
+      ctx.font = 'italic 12px Georgia, serif';
+      ctx.fillStyle = 'rgba(244,228,193,0.55)';
       ctx.fillText(
         `antes: vento ${Math.abs(this.history.wind).toFixed(0)} ${hDir} · ${this.history.angle.toFixed(0)}° · forca ${Math.round(this.history.power)}`,
         18,
-        y + 90,
+        y + 102,
       );
-      ctx.font = '13px Georgia, serif';
+      ctx.font = '15px Georgia, serif';
     }
 
     // Angulo e forca
     ctx.fillStyle = PALETTE.cream;
-    ctx.fillText(`Angulo ${this.aimAngle.toFixed(0)} graus`, 130, y + 26);
+    ctx.fillText(`Angulo ${this.aimAngle.toFixed(0)} graus`, 130, y + 30);
 
-    ctx.fillText('Forca (clique ou arraste)', 130, y + 48);
+    ctx.fillText('Forca (clique/arraste)', 130, y + 54);
     const fbar = this.forceBarRect();
     ctx.fillStyle = 'rgba(244,228,193,0.25)';
     ctx.fillRect(fbar.x, fbar.y, fbar.w, fbar.h);
@@ -1163,17 +1249,17 @@ export class MatchScene {
     ctx.lineWidth = 1;
     ctx.strokeRect(fbar.x, fbar.y, fbar.w, fbar.h);
     ctx.fillStyle = PALETTE.cream;
-    ctx.font = 'bold 11px Georgia, serif';
-    ctx.fillText(`${Math.round(this.power)}`, fbar.x + fbar.w + 6, fbar.y + 9);
-    ctx.font = '13px Georgia, serif';
+    ctx.font = 'bold 13px Georgia, serif';
+    ctx.fillText(`${Math.round(this.power)}`, fbar.x + fbar.w + 8, fbar.y + 11);
+    ctx.font = '15px Georgia, serif';
 
     // Combustivel
     ctx.fillStyle = PALETTE.cream;
-    ctx.fillText('Passos', 130, y + 70);
+    ctx.fillText('Passos', 130, y + 82);
     ctx.fillStyle = 'rgba(244,228,193,0.25)';
-    ctx.fillRect(185, y + 60, 170, 10);
+    ctx.fillRect(195, y + 72, 190, 12);
     ctx.fillStyle = PALETTE.bottle;
-    ctx.fillRect(185, y + 60, (170 * this.fuel) / JORBE_FUEL_PER_ROUND, 10);
+    ctx.fillRect(195, y + 72, (190 * this.fuel) / JORBE_FUEL_PER_ROUND, 12);
 
     // Armas — cartas com icone desenhado, clicaveis, nao so texto.
     WEAPONS.forEach((w, i) => {
@@ -1190,22 +1276,22 @@ export class MatchScene {
       ctx.lineWidth = 2;
       ctx.stroke();
 
-      drawWeaponIcon(ctx, w.id, card.x + 22, card.y + 27, 26, out ? 'rgba(217,164,65,0.3)' : w.color);
+      drawWeaponIcon(ctx, w.id, card.x + 24, card.y + 31, 30, out ? 'rgba(217,164,65,0.3)' : w.color);
 
       ctx.fillStyle = selected ? INK : out ? 'rgba(244,228,193,0.35)' : PALETTE.cream;
-      ctx.font = 'bold 12px Georgia, serif';
-      ctx.fillText(`${i + 1}. ${w.name}`, card.x + 42, card.y + 20);
-      ctx.font = '11px Georgia, serif';
-      ctx.fillText(ammo === null || ammo === undefined ? 'infinita' : `${ammo} restantes`, card.x + 42, card.y + 38);
+      ctx.font = 'bold 14px Georgia, serif';
+      ctx.fillText(`${i + 1}. ${w.name}`, card.x + 48, card.y + 24);
+      ctx.font = '13px Georgia, serif';
+      ctx.fillText(ammo === null || ammo === undefined ? 'infinita' : `${ammo} restantes`, card.x + 48, card.y + 44);
     });
     const wx = this.weaponCardRect(WEAPONS.length - 1).x + this.weaponCardRect(WEAPONS.length - 1).w;
 
     // Estado
-    ctx.font = '13px Georgia, serif';
+    ctx.font = '15px Georgia, serif';
     ctx.fillStyle = PALETTE.crust;
     let status = '';
     if (this.phase === 'prep') {
-      status = this.aimLocked ? 'Tiro travado. Aguardando os outros...' : 'A/D anda · W/S mira · SEGURE ESPACO';
+      status = this.aimLocked ? 'Tiro travado. Aguardando os outros...' : 'A/D anda · SEGURE ESPACO';
     } else if (this.phase === 'resolve') status = 'Resolvendo a rodada...';
     else if (this.phase === 'interval') status = 'Fim da rodada';
     if (self && !self.alive) status = 'Voce foi eliminado — assistindo';
@@ -1258,11 +1344,11 @@ export class MatchScene {
     const humans = [...this.players.values()].filter((p) => p.alive && !p.isBot);
     if (humans.length === 0) return;
 
-    const rowH = 18;
+    const rowH = 22;
     const maxRows = 8;
     const shown = humans.slice(0, maxRows);
     const panelY = mm.y + mm.h + 10;
-    const panelH = 26 + shown.length * rowH + (humans.length > maxRows ? rowH : 0);
+    const panelH = 30 + shown.length * rowH + (humans.length > maxRows ? rowH : 0);
 
     ctx.fillStyle = 'rgba(19,8,2,0.85)';
     ctx.fillRect(mm.x, panelY, mm.w, panelH);
@@ -1271,16 +1357,16 @@ export class MatchScene {
     ctx.strokeRect(mm.x, panelY, mm.w, panelH);
 
     const readyCount = humans.filter((p) => this.readyIds.has(p.id)).length;
-    ctx.font = 'bold 11px Georgia, serif';
+    ctx.font = 'bold 13px Georgia, serif';
     ctx.fillStyle = readyCount === humans.length ? PALETTE.bottle : PALETTE.crust;
-    ctx.fillText(`PRONTOS: ${readyCount}/${humans.length}`, mm.x + 8, panelY + 16);
+    ctx.fillText(`PRONTOS: ${readyCount}/${humans.length}`, mm.x + 8, panelY + 19);
 
     shown.forEach((p, i) => {
       const ready = this.readyIds.has(p.id);
-      const ry = panelY + 32 + i * rowH;
+      const ry = panelY + 38 + i * rowH;
 
       ctx.beginPath();
-      ctx.arc(mm.x + 14, ry - 4, 5, 0, Math.PI * 2);
+      ctx.arc(mm.x + 15, ry - 5, 6, 0, Math.PI * 2);
       ctx.fillStyle = ready ? PALETTE.bottle : 'rgba(244,228,193,0.18)';
       ctx.fill();
       ctx.strokeStyle = INK;
@@ -1288,23 +1374,23 @@ export class MatchScene {
       ctx.stroke();
       if (ready) {
         ctx.strokeStyle = INK;
-        ctx.lineWidth = 1.4;
+        ctx.lineWidth = 1.6;
         ctx.beginPath();
-        ctx.moveTo(mm.x + 11.5, ry - 4);
-        ctx.lineTo(mm.x + 13.5, ry - 1.5);
-        ctx.lineTo(mm.x + 17, ry - 7);
+        ctx.moveTo(mm.x + 12, ry - 5);
+        ctx.lineTo(mm.x + 14.5, ry - 2);
+        ctx.lineTo(mm.x + 19, ry - 9);
         ctx.stroke();
       }
 
-      ctx.font = '11px Georgia, serif';
+      ctx.font = '13px Georgia, serif';
       ctx.fillStyle = p.id === this.ownId ? PALETTE.crust : PALETTE.cream;
-      ctx.fillText(p.nick.slice(0, 16), mm.x + 26, ry);
+      ctx.fillText(p.nick.slice(0, 16), mm.x + 28, ry);
     });
 
     if (humans.length > maxRows) {
-      ctx.font = 'italic 10px Georgia, serif';
+      ctx.font = 'italic 12px Georgia, serif';
       ctx.fillStyle = '#a08a63';
-      ctx.fillText(`+${humans.length - maxRows} outros`, mm.x + 26, panelY + 32 + shown.length * rowH);
+      ctx.fillText(`+${humans.length - maxRows} outros`, mm.x + 28, panelY + 38 + shown.length * rowH);
     }
   }
 

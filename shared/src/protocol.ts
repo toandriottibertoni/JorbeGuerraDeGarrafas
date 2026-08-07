@@ -153,6 +153,13 @@ export interface CratePicked {
   kind: 'health' | 'ammo';
 }
 
+/** Dano causado e abates de um jogador, acumulado a partida inteira. */
+export interface PlayerStat {
+  playerId: string;
+  damage: number;
+  kills: number;
+}
+
 // ---------------------------------------------------------------------------
 // Eventos Socket.IO
 // ---------------------------------------------------------------------------
@@ -206,6 +213,7 @@ export interface ServerToClientEvents {
   roundReady: (data: ReadyState) => void;
   crates: (list: CrateDef[]) => void;
   cratePicked: (data: CratePicked) => void;
+  matchStats: (list: PlayerStat[]) => void;
   roundResolve: (plan: ResolutionPlan) => void;
   roundEnd: (data: RoundEnd) => void;
   matchEnd: (data: MatchEnd) => void;

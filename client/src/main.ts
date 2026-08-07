@@ -10,6 +10,7 @@ app.innerHTML = `
   <canvas id="game"></canvas>
   <div id="overlay"><div class="panel" id="panel"></div></div>
   <button id="muteBtn" class="ghost" title="Ligar/desligar som">🔊</button>
+  <div id="versionTag">v${__APP_VERSION__}</div>
 `;
 
 const overlay = document.querySelector<HTMLDivElement>('#overlay')!;
@@ -128,7 +129,12 @@ function renderAuth(): void {
 
   panel.innerHTML = `
     <h1>GUERRA <span>DE GARRAFAS</span></h1>
-    <p class="sub">Ate ${ROOM_MAX_PLAYERS} Jorbes, todos contra todos. Todo mundo mira ao mesmo tempo — e os tiros saem juntos.</p>
+    <p class="sub">
+      <b>Multiplayer online de verdade</b> — ate ${ROOM_MAX_PLAYERS} Jorbes, todos contra
+      todos, jogando ao vivo pela internet. Todo mundo mira ao mesmo tempo e os tiros
+      saem juntos. Mire e atire com o <b>mouse</b> (clique e arraste, estilo estilingue)
+      ou no teclado.
+    </p>
     ${tabs}
     <div class="row" style="flex-direction:column;align-items:stretch">${form}</div>
     <p class="error" id="err">${escapeHtml(lastError)}</p>
@@ -286,10 +292,10 @@ function renderRoom(): void {
     </div>
     <div class="hint">
       <b>Controles:</b> A/D anda · W/S ajusta o angulo · SHIFT pula ·
-      SEGURE ESPACO ou clique com o BOTAO ESQUERDO em qualquer ponto do mapa
+      SEGURE ESPACO ou clique com o BOTAO DIREITO em qualquer ponto do mapa
       e arraste (estilo estilingue) pra mirar · clique na barra de forca ou
       nas cartas de arma pra ajustar direto · botao OK trava o tiro ·
-      1/2/3 troca a arma · BOTAO DIREITO arrasta a camera · C volta a camera
+      1/2/3 troca a arma · BOTAO ESQUERDO arrasta a camera · C volta a camera
       pro seu Jorbe.
       ${isHost ? '' : '<br>Aguardando o dono da sala comecar.'}
     </div>

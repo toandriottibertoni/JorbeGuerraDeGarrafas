@@ -39,6 +39,7 @@ import {
   type MoveInput,
   type Phase,
   type PlayerSnapshot,
+  type PlayerStat,
   type Projectile,
   type ReadyState,
   type ResolutionPlan,
@@ -47,6 +48,7 @@ import {
   type SimEvent,
   type Snapshot,
 } from '@jorbe/shared';
+import { pickBotWeapon, solveBotShot } from './bot.js';
 
 export interface MatchPlayerSeed {
   id: string;
@@ -71,6 +73,7 @@ export interface MatchOutbound {
   roundReady: ReadyState;
   crates: CrateDef[];
   cratePicked: CratePicked;
+  matchStats: PlayerStat[];
   roundResolve: ResolutionPlan;
   roundEnd: { round: number; alive: string[] };
   matchEnd: MatchEnd;
@@ -87,6 +90,15 @@ interface PlayerRuntime {
   aim: AimMessage | null;
   /** Ordem de eliminacao: 0 = ainda vivo. */
   eliminatedAtRound: number;
+}
+
+/** Roteiro de um Jorbot pra rodada atual: quanto tempo anda e quando atira. */
+interface BotPlan {
+  walkDir: -1 | 0 | 1;
+  walkUntilMs: number;
+  fireAtMs: number;
+  targetId: string | null;
+  fired: boolean;
 }
 
 /**
@@ -112,6 +124,10 @@ export class MatchEngine {
   private readonly carves: CarveOp[] = [];
   private crates: CrateDef[] = [];
   private nextCrateId = 1;
+  private readonly botRng: Rng;
+  private readonly botPlans = new Map<string, BotPlan>();
+  /** Dano causado e abates de cada jogador, acumulado a partida inteira. */
+  private readonly matchStats = new Map<string, { damage: number; kills: number }>();
   private readonly rng: Rng;
 
   private phase: Phase = 'prep';
@@ -132,6 +148,7 @@ export class MatchEngine {
     this.sink = sink;
     this.terrain = Terrain.generate(mapId, seed);
     this.rng = new Rng(seed ^ 0x9e37);
+    this.botRng = new Rng(seed ^ 0xb0b);
 
     const spawns = pickSpawns(this.terrain, seeds.length, seed);
 
@@ -160,6 +177,7 @@ export class MatchEngine {
         },
       });
       this.order.push(s.id);
+      this.matchStats.set(s.id, { damage: 0, kills: 0 });
     });
   }
 
@@ -306,6 +324,8 @@ export class MatchEngine {
       p.char.fuel = JORBE_FUEL_PER_ROUND;
     }
 
+    this.planBotsForRound();
+
     for (const p of this.players.values()) {
       const prep: RoundPrep = {
         round: this.round,
@@ -323,6 +343,8 @@ export class MatchEngine {
   private updatePrep(dtMs: number): void {
     const events: SimEvent[] = [];
     const dt = dtMs / 1000;
+
+    this.driveBots(dtMs);
 
     for (const id of this.order) {
       const p = this.players.get(id)!;
@@ -429,6 +451,67 @@ export class MatchEngine {
   }
 
   // -------------------------------------------------------------------------
+  // Jorbots
+  // -------------------------------------------------------------------------
+
+  /** Sorteia o roteiro de cada Jorbot vivo pra rodada que esta comecando. */
+  private planBotsForRound(): void {
+    this.botPlans.clear();
+    const bots = this.order.map((id) => this.players.get(id)!).filter((p) => p.isBot && p.char.alive);
+    if (bots.length === 0) return;
+
+    const humans = this.order.map((id) => this.players.get(id)!).filter((p) => !p.isBot && p.char.alive);
+
+    for (const bot of bots) {
+      // Prefere mirar em gente de verdade; so atira em outro bot se nao sobrar humano.
+      const targets = humans.length > 0 ? humans : bots.filter((b) => b.id !== bot.id);
+      const target = targets.length > 0 ? this.botRng.pick(targets) : null;
+
+      const walkDir = this.botRng.pick([-1, 0, 1] as const);
+      const walkUntilMs = this.botRng.range(400, Math.min(2600, this.phaseDurationMs * 0.4));
+      // Atira numa janela do meio da rodada — nunca cedo demais (fica robotico
+      // atirar instantaneamente) nem tarde demais (precisa de folga antes do fim).
+      const earliest = walkUntilMs + 300;
+      const latest = Math.max(earliest + 200, this.phaseDurationMs - 1200);
+      const fireAtMs = this.botRng.range(earliest, latest);
+
+      this.botPlans.set(bot.id, {
+        walkDir,
+        walkUntilMs,
+        fireAtMs,
+        targetId: target?.id ?? null,
+        fired: false,
+      });
+    }
+  }
+
+  /** Aplica o roteiro dos bots a cada tick: anda um pouco, depois mira e atira uma vez. */
+  private driveBots(dtMs: number): void {
+    if (this.botPlans.size === 0) return;
+
+    for (const [botId, plan] of this.botPlans) {
+      const bot = this.players.get(botId);
+      if (!bot || !bot.char.alive) continue;
+
+      if (this.phaseElapsedMs < plan.walkUntilMs) {
+        bot.input = { left: plan.walkDir < 0, right: plan.walkDir > 0, jump: false };
+      } else if (bot.input.left || bot.input.right) {
+        bot.input = { ...NO_INPUT };
+      }
+
+      if (plan.fired || this.phaseElapsedMs < plan.fireAtMs) continue;
+      plan.fired = true;
+
+      const target = plan.targetId ? this.players.get(plan.targetId) : null;
+      if (!target || !target.char.alive) continue; // alvo morreu antes da hora — passa a vez.
+
+      const weapon = pickBotWeapon(bot.ammo, this.botRng);
+      const shot = solveBotShot(bot.char.x, bot.char.y, target.char.x, target.char.y, this.wind, this.botRng);
+      this.applyAim(botId, { angle: shot.angle, power: shot.power, weaponId: weapon.id, fire: true });
+    }
+  }
+
+  // -------------------------------------------------------------------------
   // Fase de resolucao
   // -------------------------------------------------------------------------
 
@@ -441,7 +524,40 @@ export class MatchEngine {
     // para a animacao terminar antes de trocar de fase.
     this.phaseDurationMs = (plan.totalTicks / 60) * 1000 + 500;
 
+    this.attributeStats(plan);
     this.sink.toAll('roundResolve', plan);
+    this.sink.toAll(
+      'matchStats',
+      [...this.matchStats.entries()].map(([playerId, s]) => ({ playerId, damage: s.damage, kills: s.kills })),
+    );
+  }
+
+  /**
+   * Credita dano/abates a quem atirou. So conta dano de explosao (fall/void
+   * nao tem atirador) e nunca credita um "abate" de quem se explodiu sozinho
+   * — isso e azar, nao habilidade.
+   */
+  private attributeStats(plan: ResolutionPlan): void {
+    const shotOwner = new Map<number, string>();
+    for (const s of plan.shots) shotOwner.set(s.id, s.ownerId);
+
+    let lastOwner: string | null = null;
+    for (const e of plan.events) {
+      if (e.kind === 'explosion') {
+        lastOwner = shotOwner.get(e.shotId) ?? null;
+        continue;
+      }
+      if (!lastOwner || e.kind !== 'damage' && e.kind !== 'death') continue;
+      if (e.cause !== 'blast') continue;
+
+      if (e.kind === 'damage') {
+        const stat = this.matchStats.get(lastOwner);
+        if (stat) stat.damage += e.amount;
+      } else if (e.playerId !== lastOwner) {
+        const stat = this.matchStats.get(lastOwner);
+        if (stat) stat.kills += 1;
+      }
+    }
   }
 
   private simulateResolution(): ResolutionPlan {

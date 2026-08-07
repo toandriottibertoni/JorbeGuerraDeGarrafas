@@ -382,3 +382,15 @@ button.ghost:active:not(:disabled) {
   font-size: 0.85rem;
   padding: 8px 14px;
 }
+
+#versionTag {
+  position: fixed;
+  bottom: 8px;
+  left: 10px;
+  z-index: 60;
+  color: rgba(244, 228, 193, 0.4);
+  font-size: 0.7rem;
+  font-family: Georgia, serif;
+  pointer-events: none;
+  user-select: none;
+}
