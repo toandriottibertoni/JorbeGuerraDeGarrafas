@@ -14,6 +14,7 @@ import {
   type MatchEnd,
   type ReadyState,
   type ResolutionPlan,
+  type SimEvent,
 } from '@jorbe/shared';
 import { MatchEngine, type MatchOutbound, type MatchSink } from './MatchEngine.js';
 
@@ -595,6 +596,19 @@ test('municao de arma infinita nao quebra ao "reabastecer"', () => {
   assert.equal(p0.ammo.tampinha, null, 'tampinha e infinita, tem que continuar null');
 });
 
+test('engradado de municao pode dar uma arma de drop pela primeira vez', () => {
+  const { engine } = makeMatch(2);
+  engine.start();
+
+  const p0 = poke(engine).players.get('p0');
+  assert.equal(p0.ammo.racimo, 0, 'arma de drop comeca com 0, nunca na municao inicial');
+
+  poke(engine).crates = [{ id: 5, x: p0.char.x, y: p0.char.y, kind: 'ammo', weaponId: 'racimo' }];
+  poke(engine).checkCratePickups();
+
+  assert.equal(p0.ammo.racimo, CRATE_AMMO_REFILL, 'o engradado deveria destravar a arma de drop');
+});
+
 test('engradado nao nasce parcialmente enterrado no terreno', () => {
   const { engine } = makeMatch(4, 909);
   engine.start();
@@ -623,9 +637,12 @@ test('acertar um engradado com o tiro da o efeito pra quem atirou', () => {
   p0.char.hp = 50;
   poke(engine).crates = [{ id: 10, x: 1200, y: 500, kind: 'health' }];
 
+  const events: SimEvent[] = [
+    { kind: 'explosion', tick: 5, shotId: 1, x: 1210, y: 505, weaponId: 'bazuca', radius: 40 },
+  ];
   poke(engine).claimCratesFromExplosions(
     [{ id: 1, ownerId: 'p0', weaponId: 'bazuca', x: 0, y: 0, vx: 0, vy: 0 }],
-    [{ kind: 'explosion', tick: 5, shotId: 1, x: 1210, y: 505, weaponId: 'bazuca', radius: 40 }],
+    events,
   );
 
   assert.equal(p0.char.hp, 50 + CRATE_HEAL_AMOUNT, 'quem atirou deveria receber a cura');
@@ -633,6 +650,17 @@ test('acertar um engradado com o tiro da o efeito pra quem atirou', () => {
   const picked = sink.eventsOf('cratePicked') as CratePicked[];
   assert.equal(picked.length, 1);
   assert.equal(picked[0].playerId, 'p0');
+
+  // O estouro visual do cliente e sincronizado ao tick da explosao que
+  // acertou -- nao pode chegar como um evento solto e imediato.
+  const crateHit = events.find((e) => e.kind === 'crateHit');
+  assert.ok(crateHit, 'precisa registrar um evento crateHit pro cliente sincronizar o efeito');
+  assert.equal(crateHit!.tick, 5, 'o estouro tem que acontecer no mesmo tick da explosao que acertou');
+  if (crateHit!.kind === 'crateHit') {
+    assert.equal(crateHit!.crateId, 10);
+    assert.equal(crateHit!.playerId, 'p0');
+    assert.equal(crateHit!.crateKind, 'health');
+  }
 });
 
 test('explosao longe do engradado nao o afeta', () => {

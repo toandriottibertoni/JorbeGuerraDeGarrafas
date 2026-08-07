@@ -269,14 +269,24 @@ function renderRoom(): void {
     .map((p) => {
       const cls = p.isBot ? 'chip bot' : p.isHost ? 'chip host' : 'chip';
       const tag = p.isHost ? ' (dono)' : p.isGuest ? ' (convidado)' : '';
-      return `<span class="${cls}">${escapeHtml(p.nick)}${tag}</span>`;
+      const removeBtn =
+        p.isBot && isHost
+          ? `<button class="chip-remove" data-remove-bot="${escapeHtml(p.id)}" title="Remover Jorbot">×</button>`
+          : '';
+      return `<span class="${cls}">${escapeHtml(p.nick)}${tag}${removeBtn}</span>`;
     })
     .join('');
 
   panel.innerHTML = `
     <h2>${escapeHtml(room.name)}</h2>
-    <p class="sub">Mapa: <b>${escapeHtml(MAPS.find((m) => m.id === room!.mapId)?.name ?? room.mapId)}</b>
-      · ${room.players.length}/${room.maxPlayers} jogadores</p>
+    <div class="row" style="margin-bottom:12px">
+      <label class="sub" style="margin:0;flex:0 0 auto;">Fase:
+        <select id="mapSelect" ${isHost ? '' : 'disabled'} style="width:auto;margin-left:6px;">
+          ${MAPS.map((m) => `<option value="${m.id}" ${m.id === room!.mapId ? 'selected' : ''}>${escapeHtml(m.name)}</option>`).join('')}
+        </select>
+      </label>
+      <span class="sub" style="margin:0;">${room.players.length}/${room.maxPlayers} jogadores</span>
+    </div>
     <div class="players">${chips}</div>
     <div class="row">
       <button id="start" ${isHost ? '' : 'disabled'}>Comecar partida</button>
@@ -305,6 +315,12 @@ function renderRoom(): void {
   panel.querySelector<HTMLButtonElement>('#start')!.onclick = () => net.socket.emit('roomStart');
   panel.querySelector<HTMLButtonElement>('#dummy')!.onclick = () => net.socket.emit('roomAddDummy');
   panel.querySelector<HTMLButtonElement>('#leave')!.onclick = () => net.socket.emit('roomLeave');
+  panel.querySelector<HTMLSelectElement>('#mapSelect')!.onchange = (e) => {
+    net.socket.emit('roomSetMap', { mapId: (e.target as HTMLSelectElement).value });
+  };
+  panel.querySelectorAll<HTMLButtonElement>('[data-remove-bot]').forEach((btn) => {
+    btn.onclick = () => net.socket.emit('roomRemoveDummy', { dummyId: btn.dataset.removeBot! });
+  });
 
   const chatInput = panel.querySelector<HTMLInputElement>('#chatInput')!;
   const send = (): void => {

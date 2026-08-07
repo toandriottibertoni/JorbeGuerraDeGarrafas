@@ -501,6 +501,11 @@ export class MatchScene {
   }
 
   private onCratePicked(data: CratePicked): void {
+    // Na resolucao o evento 'crateHit' sincronizado ao tick da explosao cuida
+    // do estouro e da remocao no momento certo -- aqui seria cedo demais
+    // (esse broadcast chega junto com o resultado da rodada inteira, bem
+    // antes do tiro visualmente alcancar a caixa na reproducao).
+    if (this.phase === 'resolve') return;
     const crate = this.crates.find((c) => c.id === data.id);
     this.crates = this.crates.filter((c) => c.id !== data.id);
     if (!crate) return;
@@ -636,10 +641,10 @@ export class MatchScene {
     e.preventDefault();
   };
 
-  /** Roda do mouse: aproxima ou afasta a camera, mantendo o centro da tela fixo. */
+  /** Roda do mouse: aproxima ou afasta a camera, mantendo o centro da tela fixo. Passo pequeno pra ajustar aos poucos. */
   private onWheel = (e: WheelEvent): void => {
     e.preventDefault();
-    const factor = e.deltaY < 0 ? 1.12 : 1 / 1.12;
+    const factor = e.deltaY < 0 ? 1.035 : 1 / 1.035;
     this.cam.zoomBy(factor);
   };
 
@@ -686,13 +691,30 @@ export class MatchScene {
     return this.cam.viewH - this.hudH;
   }
 
+  /**
+   * Armas de drop (so vem de engradado) ficam fora da fileira ate o jogador
+   * ter ao menos uma carga — senao a HUD sempre mostraria cartas vazias que
+   * ninguem pode usar ainda, e o layout (ja apertado com 4 armas) explodiria
+   * com 7 fixas. `idx` e o indice de verdade em WEAPONS, usado pra selecionar.
+   */
+  private get visibleWeapons(): { w: (typeof WEAPONS)[number]; idx: number }[] {
+    return WEAPONS.map((w, idx) => ({ w, idx })).filter(
+      ({ w, idx }) => !w.dropOnly || (this.ammo[w.id] ?? 0) > 0 || idx === this.weaponIdx,
+    );
+  }
+
   private weaponCardRect(i: number): { x: number; y: number; w: number; h: number } {
+    const count = this.visibleWeapons.length;
+    const gap = 8;
     if (!this.compactHud) {
-      return { x: 400 + i * 164, y: this.hudY + 14, w: 156, h: 62 };
+      // Largura calculada, nao fixa: armas de drop podem levar a fileira a
+      // mais de 4 cartas, e um stride fixo (como era antes) vazaria pra fora
+      // da tela de novo — mesma classe de bug ja corrigida pro texto da HUD.
+      const startX = 400;
+      const w = Math.min(156, (this.cam.viewW - startX - 20 - gap * (count - 1)) / count);
+      return { x: startX + i * (w + gap), y: this.hudY + 14, w, h: 62 };
     }
     const margin = 14;
-    const gap = 8;
-    const count = WEAPONS.length;
     const w = Math.min(156, (this.cam.viewW - margin * 2 - gap * (count - 1)) / count);
     return { x: margin + i * (w + gap), y: this.hudY + 118, w, h: 62 };
   }
@@ -796,10 +818,11 @@ export class MatchScene {
     // Botao esquerdo: cartas de arma e barra de forca continuam sendo
     // botoes normais de UI; fora delas, arrasta a camera.
     if (canAdjust) {
-      for (let i = 0; i < WEAPONS.length; i++) {
+      const visible = this.visibleWeapons;
+      for (let i = 0; i < visible.length; i++) {
         if (this.inRect(e.clientX, e.clientY, this.weaponCardRect(i))) {
-          if (WEAPONS[i]!.defensive) this.toggleShield();
-          else this.selectWeapon(i);
+          if (visible[i]!.w.defensive) this.toggleShield();
+          else this.selectWeapon(visible[i]!.idx);
           return;
         }
       }
@@ -1195,8 +1218,17 @@ export class MatchScene {
         if (p) {
           p.alive = false;
           p.hp = 0;
-          this.particles.burst(p.x, p.y - JORBE_HEIGHT / 2, 30, PALETTE.bottle);
-          sfx.sfxDeath();
+          if (e.cause === 'water') {
+            // Cair no rio (mapa da ponte) e um afogamento, nao uma explosao —
+            // chapinho azul n'agua em vez do estilhaco de vidro de sempre.
+            this.floatingTexts.spawn(p.x, p.y - JORBE_HEIGHT - 10, 'AFOGOU!', PALETTE.water);
+            this.particles.burst(p.x, p.y, 26, PALETTE.water);
+            this.particles.flash(p.x, p.y, 20);
+            sfx.sfxSplash();
+          } else {
+            this.particles.burst(p.x, p.y - JORBE_HEIGHT / 2, 30, PALETTE.bottle);
+            sfx.sfxDeath();
+          }
         }
         break;
       }
@@ -1206,6 +1238,19 @@ export class MatchScene {
           this.floatingTexts.spawn(p.x, p.y - JORBE_HEIGHT - 10, 'BLOQUEADO!', '#6fb8d6');
           this.particles.flash(p.x, p.y - JORBE_HEIGHT / 2, 26);
           sfx.sfxShieldBlock();
+        }
+        break;
+      }
+      case 'crateHit': {
+        this.crates = this.crates.filter((c) => c.id !== e.crateId);
+        const color = e.crateKind === 'health' ? PALETTE.red : PALETTE.crust;
+        this.particles.burst(e.x, e.y - 14, 26, color);
+        this.particles.flash(e.x, e.y - 14, 20);
+        this.shockwaves.spawn(e.x, e.y - 14, 50);
+        this.floatingTexts.spawn(e.x, e.y - 34, 'ACERTOU!', color);
+        sfx.sfxCrateBurst();
+        if (e.playerId === this.ownId) {
+          this.showBanner(e.crateKind === 'health' ? 'Vida recuperada!' : 'Municao recebida!', 1000);
         }
         break;
       }
@@ -1675,12 +1720,13 @@ export class MatchScene {
     ctx.fillStyle = PALETTE.bottle;
     ctx.fillRect(fuelBar.x, fuelBar.y, (fuelBar.w * this.fuel) / JORBE_FUEL_PER_ROUND, fuelBar.h);
 
-    // Armas — cartas com icone desenhado, clicaveis, nao so texto.
-    WEAPONS.forEach((w, i) => {
+    // Armas — cartas com icone desenhado, clicaveis, nao so texto. So mostra
+    // as de drop depois que o jogador pega ao menos uma no engradado.
+    this.visibleWeapons.forEach(({ w, idx }, i) => {
       const card = this.weaponCardRect(i);
       // Escudo e um toggle a parte (armado/desarmado), nao uma "arma selecionada"
       // como as outras tres — usa a propria cor pra deixar essa diferenca clara.
-      const active = w.defensive ? this.shieldArmed : i === this.weaponIdx;
+      const active = w.defensive ? this.shieldArmed : idx === this.weaponIdx;
       const activeColor = w.defensive ? '#6fb8d6' : PALETTE.crust;
       const ammo = this.ammo[w.id];
       const out = ammo !== null && ammo !== undefined && ammo <= 0;
@@ -1728,7 +1774,8 @@ export class MatchScene {
     if (self && !self.alive) status = 'Voce foi eliminado — assistindo';
 
     if (!compact) {
-      const wx = this.weaponCardRect(WEAPONS.length - 1).x + this.weaponCardRect(WEAPONS.length - 1).w;
+      const lastIdx = this.visibleWeapons.length - 1;
+      const wx = this.weaponCardRect(lastIdx).x + this.weaponCardRect(lastIdx).w;
       ctx.font = '15px Georgia, serif';
       ctx.fillStyle = PALETTE.crust;
       const statusMaxW = this.cam.viewW - wx - 20;

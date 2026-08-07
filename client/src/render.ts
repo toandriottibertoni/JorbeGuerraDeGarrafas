@@ -23,6 +23,8 @@ export const PALETTE = {
   cream: '#f4e4c1',
   red: '#b23a2f',
   smoke: '#9a8a76',
+  water: '#2a5f8a',
+  waterDeep: '#173a54',
 };
 
 function easeOutCubic(t: number): number {
@@ -199,14 +201,19 @@ export class TerrainRenderer {
     const dirt = hexToRgb(PALETTE.dirt);
     const crust = hexToRgb(PALETTE.crust);
     const crustDeep = hexToRgb(PALETTE.crustDeep);
+    const water = hexToRgb(PALETTE.water);
+    const waterDeep = hexToRgb(PALETTE.waterDeep);
 
     for (let x = 0; x < w; x++) {
       const wx = x0 + x;
       // Profundidade real desde a superficie: precisa varrer desde o topo do
       // retangulo pra crosta continuar certa quando so remendamos um pedaco.
       let depth = 0;
+      let waterDepth = 0;
       for (let sy = Math.max(0, y0 - 8); sy < y0; sy++) {
-        depth = data[sy * MAP_WIDTH + wx] === Mat.AIR ? 0 : depth + 1;
+        const sm = data[sy * MAP_WIDTH + wx];
+        depth = sm === Mat.AIR || sm === Mat.LIQUID ? 0 : depth + 1;
+        waterDepth = sm === Mat.LIQUID ? waterDepth + 1 : 0;
       }
 
       for (let y = 0; y < h; y++) {
@@ -216,7 +223,21 @@ export class TerrainRenderer {
 
         if (m === Mat.AIR) {
           depth = 0;
+          waterDepth = 0;
           px[o + 3] = 0;
+          continue;
+        }
+
+        if (m === Mat.LIQUID) {
+          depth = 0;
+          waterDepth++;
+          // Rio da ponte: escurece com a profundidade, semitransparente pra
+          // dar uma nocao de fundo mesmo sem animar onda de verdade.
+          const c = waterDepth <= 10 ? water : waterDeep;
+          px[o] = c[0];
+          px[o + 1] = c[1];
+          px[o + 2] = c[2];
+          px[o + 3] = 225;
           continue;
         }
 
@@ -658,6 +679,40 @@ export function drawWeaponIcon(ctx: CanvasRenderingContext2D, weaponId: string, 
     ctx.moveTo(-size * 0.18, -size * 0.02);
     ctx.lineTo(size * 0.18, -size * 0.02);
     ctx.stroke();
+  } else if (weaponId === 'racimo') {
+    // Cacho de tres bombinhas coladas.
+    const r = size * 0.22;
+    const offsets: [number, number][] = [
+      [0, -size * 0.18],
+      [-size * 0.22, size * 0.18],
+      [size * 0.22, size * 0.18],
+    ];
+    for (const [ox, oy] of offsets) {
+      ctx.beginPath();
+      ctx.arc(ox, oy, r, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+    }
+  } else if (weaponId === 'napalm') {
+    // Gota de fogo.
+    ctx.beginPath();
+    ctx.moveTo(0, -size * 0.46);
+    ctx.bezierCurveTo(size * 0.32, -size * 0.05, size * 0.3, size * 0.22, 0, size * 0.46);
+    ctx.bezierCurveTo(-size * 0.3, size * 0.22, -size * 0.32, -size * 0.05, 0, -size * 0.46);
+    ctx.closePath();
+    ctx.fill();
+    ctx.stroke();
+  } else if (weaponId === 'vortice') {
+    // Espiral: dois arcos concentricos incompletos + nucleo.
+    ctx.beginPath();
+    ctx.arc(0, 0, size * 0.42, 0.3, Math.PI * 1.7);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.arc(0, 0, size * 0.26, -0.4, Math.PI * 1.2);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.arc(0, 0, size * 0.1, 0, Math.PI * 2);
+    ctx.fill();
   } else {
     ctx.beginPath();
     ctx.arc(0, 0, size * 0.4, 0, Math.PI * 2);

@@ -302,6 +302,21 @@ button.ghost:active:not(:disabled) {
   color: #a08a63;
 }
 
+.chip-remove {
+  all: unset;
+  cursor: pointer;
+  margin-left: 6px;
+  padding: 0 4px;
+  font-weight: bold;
+  color: inherit;
+  opacity: 0.6;
+  transition: opacity 120ms ease, color 120ms ease;
+}
+.chip-remove:hover {
+  opacity: 1;
+  color: var(--red);
+}
+
 #chatLog {
   height: 130px;
   overflow-y: auto;

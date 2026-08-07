@@ -232,6 +232,8 @@ export interface ClientToServerEvents {
   roomLeave: () => void;
   roomStart: () => void;
   roomAddDummy: () => void;
+  roomRemoveDummy: (req: { dummyId: string }) => void;
+  roomSetMap: (req: { mapId: string }) => void;
   chat: (req: { text: string }) => void;
   input: (msg: InputMessage) => void;
   aim: (msg: AimMessage) => void;

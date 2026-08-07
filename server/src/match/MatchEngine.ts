@@ -443,7 +443,13 @@ export class MatchEngine {
     this.crates = [];
     const count = this.rng.int(CRATE_MIN_PER_INTERVAL, CRATE_MAX_PER_INTERVAL);
     const margin = 150;
-    const ammoWeapons = WEAPONS.filter((w) => w.ammo !== null).map((w) => w.id);
+    // Armas de drop sao mais raras que uma recarga comum -- peso menor no sorteio.
+    const ammoWeapons: string[] = [];
+    for (const w of WEAPONS) {
+      if (w.ammo === null) continue;
+      const weight = w.dropOnly ? 1 : 3;
+      for (let i = 0; i < weight; i++) ammoWeapons.push(w.id);
+    }
 
     for (let i = 0; i < count; i++) {
       let placed = false;
@@ -517,6 +523,18 @@ export class MatchEngine {
         const dx = crate.x - e.x;
         const dy = crate.y - e.y;
         if (Math.sqrt(dx * dx + dy * dy) > e.radius) continue;
+        // Evento sincronizado ao tick da explosao -- o cliente so estoura a
+        // caixa visualmente quando o tiro de fato chega la na reproducao,
+        // nao no instante (bem mais cedo) em que o servidor decide o resultado.
+        events.push({
+          kind: 'crateHit',
+          tick: e.tick,
+          crateId: crate.id,
+          x: crate.x,
+          y: crate.y,
+          crateKind: crate.kind,
+          playerId: ownerId,
+        });
         this.applyCratePickup(crate, ownerId);
       }
     }

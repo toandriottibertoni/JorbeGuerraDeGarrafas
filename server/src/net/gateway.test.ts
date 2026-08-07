@@ -303,6 +303,79 @@ test('partida so comeca com o minimo de jogadores', async () => {
   }
 });
 
+test('dono troca a fase (mapa) da sala antes de comecar', async () => {
+  const h = await startServer();
+  try {
+    const dono = await connect(h, 'Dono');
+
+    const created = waitFor<RoomState>(dono, 'roomState');
+    dono.emit('roomCreate', { name: 'Sala', mapId: 'fabrica' });
+    await created;
+
+    const changed = waitFor<RoomState>(dono, 'roomState');
+    dono.emit('roomSetMap', { mapId: 'praia' });
+    const state = await changed;
+
+    assert.equal(state.mapId, 'praia');
+  } finally {
+    await stopServer(h);
+  }
+});
+
+test('so o dono pode trocar a fase da sala', async () => {
+  const h = await startServer();
+  try {
+    const dono = await connect(h, 'Dono');
+    const visita = await connect(h, 'Visita');
+
+    const created = waitFor<RoomState>(dono, 'roomState');
+    dono.emit('roomCreate', { name: 'Sala', mapId: 'fabrica' });
+    const room = await created;
+
+    const joined = waitFor<RoomState>(visita, 'roomState');
+    visita.emit('roomJoin', { roomId: room.id });
+    await joined;
+
+    const err = waitFor<string>(visita, 'errorMsg');
+    visita.emit('roomSetMap', { mapId: 'praia' });
+    assert.match(await err, /dono/i);
+  } finally {
+    await stopServer(h);
+  }
+});
+
+test('dono remove um Jorbot especifico da sala', async () => {
+  const h = await startServer();
+  try {
+    const dono = await connect(h, 'Dono');
+
+    const created = waitFor<RoomState>(dono, 'roomState');
+    dono.emit('roomCreate', { name: 'Sala', mapId: 'fabrica' });
+    await created;
+
+    const withFirst = waitFor<RoomState>(dono, 'roomState');
+    dono.emit('roomAddDummy');
+    await withFirst;
+
+    const withSecond = waitFor<RoomState>(dono, 'roomState');
+    dono.emit('roomAddDummy');
+    const roomWithBots = await withSecond;
+
+    const bots = roomWithBots.players.filter((p) => p.isBot);
+    assert.equal(bots.length, 2);
+
+    const afterRemove = waitFor<RoomState>(dono, 'roomState');
+    dono.emit('roomRemoveDummy', { dummyId: bots[0]!.id });
+    const state = await afterRemove;
+
+    const remaining = state.players.filter((p) => p.isBot);
+    assert.equal(remaining.length, 1);
+    assert.equal(remaining[0]!.id, bots[1]!.id, 'o outro bot devia continuar na sala');
+  } finally {
+    await stopServer(h);
+  }
+});
+
 test('fluxo completo: sala -> Jorbot -> comecar -> matchStart -> roundPrep -> snapshots', async () => {
   const h = await startServer();
   try {

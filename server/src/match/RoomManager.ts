@@ -244,6 +244,35 @@ export class RoomManager {
     return null;
   }
 
+  /** Remove um Jorbot especifico da sala (o dono decide qual, nao so o ultimo). */
+  removeDummy(clientId: string, dummyId: string): string | null {
+    const room = this.roomOf(clientId);
+    if (!room) return 'Voce nao esta em uma sala.';
+    if (room.hostId !== clientId) return 'So o dono da sala pode remover Jorbots.';
+    if (room.engine) return 'A partida ja comecou.';
+
+    const before = room.dummies.length;
+    room.dummies = room.dummies.filter((id) => id !== dummyId);
+    if (room.dummies.length === before) return 'Esse Jorbot nao existe mais.';
+
+    this.emitter.lobbyChanged();
+    this.emitter.roomStateChanged(room.id);
+    return null;
+  }
+
+  /** Troca a fase (mapa) da sala antes da partida comecar. */
+  setMap(clientId: string, mapId: string): string | null {
+    const room = this.roomOf(clientId);
+    if (!room) return 'Voce nao esta em uma sala.';
+    if (room.hostId !== clientId) return 'So o dono da sala pode trocar a fase.';
+    if (room.engine) return 'A partida ja comecou.';
+
+    room.mapId = getMap(mapId).id;
+    this.emitter.lobbyChanged();
+    this.emitter.roomStateChanged(room.id);
+    return null;
+  }
+
   startMatch(clientId: string): string | null {
     const room = this.roomOf(clientId);
     if (!room) return 'Voce nao esta em uma sala.';

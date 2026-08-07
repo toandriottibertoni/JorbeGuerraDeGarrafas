@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { Terrain } from './terrain.js';
+import { Mat, Terrain } from './terrain.js';
 import {
   type CharState,
   type Projectile,
@@ -237,6 +237,83 @@ test('explosao fora do raio nao encosta em ninguem', () => {
 
   assert.equal(c.hp, JORBE_MAX_HP);
   assert.equal(c.vx, 0);
+});
+
+test('bomba racimo espalha sub-estouros ao redor do impacto, alem do principal', () => {
+  const t = Terrain.generate('praia', 5);
+  // Bem longe do raio principal (60) mas dentro do alcance do leque de sub-estouros.
+  const c = makeChar('a', 1065, 500);
+  const p: Projectile = {
+    id: 7,
+    ownerId: 'x',
+    weaponId: 'racimo',
+    x: 1000,
+    y: 500 - 15,
+    vx: 0,
+    vy: 0,
+    age: 0,
+    dead: false,
+    angleBonus: 1,
+  };
+
+  const ev: SimEvent[] = [];
+  explode(t, p, [c], 0, ev);
+
+  const explosions = ev.filter((e) => e.kind === 'explosion');
+  assert.ok(explosions.length > 1, `racimo devia gerar mais de um estouro, veio ${explosions.length}`);
+  assert.ok(c.hp < JORBE_MAX_HP, 'personagem fora do raio principal mas perto do leque deveria ser atingido por um sub-estouro');
+});
+
+test('vortice puxa quem esta fora do raio de dano pro centro, sem ferir', () => {
+  const t = Terrain.generate('praia', 5);
+  // Fora do raio de dano (45) mas dentro do halo do vortice (45+130=175).
+  const c = makeChar('a', 1120, 500);
+  const p: Projectile = {
+    id: 8,
+    ownerId: 'x',
+    weaponId: 'vortice',
+    x: 1000,
+    y: 500 - 15,
+    vx: 0,
+    vy: 0,
+    age: 0,
+    dead: false,
+    angleBonus: 1,
+  };
+
+  const ev: SimEvent[] = [];
+  explode(t, p, [c], 0, ev);
+
+  assert.equal(c.hp, JORBE_MAX_HP, 'zona de puxao nao pode causar dano');
+  assert.ok(c.vx < 0, `deveria ser puxado em direcao ao epicentro (vx negativo), veio vx=${c.vx}`);
+  assert.ok(!ev.some((e) => e.kind === 'damage'), 'zona de puxao nao pode gerar evento de dano');
+  assert.ok(ev.some((e) => e.kind === 'knockback' && e.playerId === 'a'), 'o puxao ainda precisa avisar a velocidade nova');
+});
+
+test('cair na agua mata igual ao vazio (mapa da ponte)', () => {
+  // Terreno em branco (tudo ar por padrao) -- so a agua desenhada aqui importa,
+  // sem interferencia do chao solido que Terrain.generate() geraria em volta.
+  const t = new Terrain(400, 400);
+  const x = 200;
+  const waterTop = 150;
+  for (let dy = 0; dy < 60; dy++) {
+    for (let dx = -20; dx <= 20; dx++) {
+      t.data[t.index(x + dx, waterTop + dy)] = Mat.LIQUID;
+    }
+  }
+
+  const c = makeChar('a', x, waterTop + 5);
+  c.onGround = false;
+
+  const ev: SimEvent[] = [];
+  stepCharacter(t, c, NO_INPUT, TICK_DT, 0, ev);
+
+  assert.equal(c.alive, false, 'encostar na agua deveria matar na hora');
+  assert.equal(c.hp, 0);
+  assert.ok(
+    ev.some((e) => e.kind === 'death' && e.cause === 'water'),
+    'o motivo da morte precisa ser agua, nao vazio',
+  );
 });
 
 test('dano zera vida e emite morte uma unica vez', () => {

@@ -89,3 +89,63 @@ test('mesma seed gera os mesmos spawns', () => {
   const t = Terrain.generate('fabrica', 8);
   assert.deepEqual(pickSpawns(t, 8, 8), pickSpawns(t, 8, 8));
 });
+
+test('ponte: deck solido no meio, agua embaixo, rocha no fundo', () => {
+  const t = Terrain.generate('ponte', 21);
+  const midX = Math.floor(MAP_WIDTH / 2);
+
+  // No centro do mapa (vao mais alto), o topo do deck precisa ser solido.
+  const deckY = t.groundBelow(midX, 0);
+  assert.ok(deckY < MAP_HEIGHT - 24, 'precisa achar o deck antes do piso de rocha');
+  assert.equal(t.isSolid(midX, deckY), true, 'topo do deck deve ser solido');
+
+  // Bem abaixo do deck (fora do alcance normal de queda), tem que haver rio.
+  let foundWater = false;
+  for (let y = deckY + 40; y < MAP_HEIGHT - 24; y++) {
+    if (t.at(midX, y) === Mat.LIQUID) {
+      foundWater = true;
+      break;
+    }
+  }
+  assert.ok(foundWater, 'precisa haver agua entre o deck e o piso de rocha');
+
+  // O fundo continua indestrutivel feito nos outros mapas.
+  assert.equal(t.at(midX, MAP_HEIGHT - 5), Mat.ROCK, 'fundo deve ser rocha');
+});
+
+test('ponte: os jogadores nascem sobre o deck, nao dentro da agua', () => {
+  const t = Terrain.generate('ponte', 21);
+  const spawns = pickSpawns(t, 8, 21);
+  assert.equal(spawns.length, 8);
+  const half = Math.floor(JORBE_WIDTH / 2);
+  for (const s of spawns) {
+    assert.notEqual(t.at(s.x, s.y + 2), Mat.LIQUID, 'nao pode nascer em cima da agua');
+    // Perto do limite do vao central o deck tem uma leve quebra de inclinacao
+    // (a parabola do arco encontra o trecho reto) -- por isso o teste aceita
+    // qualquer coluna dentro da largura do corpo, igual ao teste de spawn dos
+    // outros mapas, em vez de exigir solido exatamente no centro.
+    let foundGroundNearby = false;
+    for (let dx = -half; dx <= half; dx++) {
+      const x = Math.max(0, Math.min(MAP_WIDTH - 1, s.x + dx));
+      if (t.isSolid(x, s.y + 2)) foundGroundNearby = true;
+    }
+    assert.ok(foundGroundNearby, `deveria haver deck proximo sob o spawn em x=${s.x}`);
+  }
+});
+
+test('carve na ponte nao apaga o rio (agua nao vira ar)', () => {
+  const t = Terrain.generate('ponte', 21);
+  const midX = Math.floor(MAP_WIDTH / 2);
+  let waterY = -1;
+  for (let y = 0; y < MAP_HEIGHT; y++) {
+    if (t.at(midX, y) === Mat.LIQUID) {
+      waterY = y;
+      break;
+    }
+  }
+  assert.ok(waterY >= 0, 'precisa existir agua nessa coluna pro teste fazer sentido');
+
+  t.carve({ x: midX, y: waterY, r: 40 });
+
+  assert.equal(t.at(midX, waterY), Mat.LIQUID, 'estourar um tiro no rio nao pode transformar agua em ar');
+});

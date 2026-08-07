@@ -11,7 +11,7 @@ import {
   MAX_STEP_UP,
   WALK_SPEED,
 } from './constants.js';
-import { Terrain } from './terrain.js';
+import { Mat, Terrain } from './terrain.js';
 import { getWeapon } from './weapons.js';
 
 /**
@@ -67,7 +67,7 @@ export interface Projectile {
   angleBonus: number;
 }
 
-export type DamageCause = 'blast' | 'fall' | 'void';
+export type DamageCause = 'blast' | 'fall' | 'void' | 'water';
 
 /**
  * Eventos produzidos pela simulacao autoritativa do servidor.
@@ -92,7 +92,16 @@ export type SimEvent =
   | { kind: 'knockback'; tick: number; playerId: string; vx: number; vy: number }
   | { kind: 'damage'; tick: number; playerId: string; amount: number; hp: number; cause: DamageCause }
   | { kind: 'death'; tick: number; playerId: string; cause: DamageCause }
-  | { kind: 'blocked'; tick: number; playerId: string };
+  | { kind: 'blocked'; tick: number; playerId: string }
+  | {
+      kind: 'crateHit';
+      tick: number;
+      crateId: number;
+      x: number;
+      y: number;
+      crateKind: 'health' | 'ammo';
+      playerId: string;
+    };
 
 // ---------------------------------------------------------------------------
 // Colisao do personagem
@@ -115,6 +124,18 @@ export function boxHits(t: Terrain, x: number, y: number): boolean {
     for (let xx = x0; xx <= x1; xx++) {
       if (t.isSolid(xx, yy)) return true;
     }
+  }
+  return false;
+}
+
+/** Os pes do Jorbe encostaram na agua? No mapa da ponte, cair no rio mata na hora. */
+function feetInLiquid(t: Terrain, c: CharState): boolean {
+  const half = JORBE_WIDTH / 2;
+  const y = Math.round(c.y);
+  const x0 = Math.round(c.x - half);
+  const x1 = x0 + JORBE_WIDTH - 1;
+  for (let xx = x0; xx <= x1; xx++) {
+    if (t.at(xx, y) === Mat.LIQUID) return true;
   }
   return false;
 }
@@ -252,6 +273,12 @@ export function stepCharacter(
     c.hp = 0;
     c.alive = false;
     events.push({ kind: 'death', tick, playerId: c.id, cause: 'void' });
+  } else if (feetInLiquid(t, c)) {
+    // Cair no rio (mapa da ponte) mata igual ao vazio -- e a estrategia
+    // central desse mapa: derrubar o adversario na agua em vez de estourar.
+    c.hp = 0;
+    c.alive = false;
+    events.push({ kind: 'death', tick, playerId: c.id, cause: 'water' });
   }
 }
 
@@ -275,7 +302,12 @@ export function applyDamage(
 // Projeteis
 // ---------------------------------------------------------------------------
 
-/** Detona um projetil: abre cratera, causa dano em raio e empurra quem esta perto. */
+/**
+ * Detona um projetil: abre cratera, causa dano em raio e empurra quem esta
+ * perto. Racimo (`cluster`) reusa este mesmo estouro em varios pontos ao
+ * redor do impacto — cada um e um evento 'explosion' normal, entao o cliente
+ * ja desenha particula/onda/som pra cada um sem precisar de nenhum caso novo.
+ */
 export function explode(
   t: Terrain,
   p: Projectile,
@@ -287,51 +319,74 @@ export function explode(
   p.dead = true;
   const w = getWeapon(p.weaponId);
 
-  events.push({
-    kind: 'explosion',
-    tick,
-    shotId: p.id,
-    x: p.x,
-    y: p.y,
-    weaponId: w.id,
-    radius: w.radius,
-  });
-  t.carve({ x: p.x, y: p.y, r: w.radius });
+  const blastAt = (cx: number, cy: number, radius: number, shotId: number, dmgScale: number, evTick: number): void => {
+    events.push({ kind: 'explosion', tick: evTick, shotId, x: cx, y: cy, weaponId: w.id, radius });
+    t.carve({ x: cx, y: cy, r: radius });
 
-  for (const c of chars) {
-    if (!c.alive) continue;
-    // Mede ate o centro do corpo, nao ate os pes.
-    const cx = c.x;
-    const cy = c.y - JORBE_HEIGHT / 2;
-    const dx = cx - p.x;
-    const dy = cy - p.y;
-    const dist = Math.sqrt(dx * dx + dy * dy);
-    if (dist > w.radius) continue;
+    const pullOuter = w.vortexRadius ?? 0;
+    const totalReach = radius + pullOuter;
 
-    // Escudo ativo bloqueia dano E empurrao desta explosao por inteiro — o
-    // jogador fica plantado no lugar, sem perder vida.
-    if (c.shielded) {
-      events.push({ kind: 'blocked', tick, playerId: c.id });
-      continue;
+    for (const c of chars) {
+      if (!c.alive) continue;
+      // Mede ate o centro do corpo, nao ate os pes.
+      const ccx = c.x;
+      const ccy = c.y - JORBE_HEIGHT / 2;
+      const dx = ccx - cx;
+      const dy = ccy - cy;
+      const dist = Math.sqrt(dx * dx + dy * dy);
+      if (dist > totalReach) continue;
+
+      // Escudo ativo bloqueia dano, empurrao E puxao do vortice por inteiro —
+      // o jogador fica plantado no lugar, sem perder vida.
+      if (c.shielded) {
+        events.push({ kind: 'blocked', tick: evTick, playerId: c.id });
+        continue;
+      }
+
+      if (dist <= radius) {
+        const falloff = 1 - dist / radius;
+        // Empurrao: direcao radial, forte no epicentro. Se estiver exatamente
+        // no centro, joga pra cima em vez de dividir por zero.
+        const push = w.knockback * falloff;
+        if (dist < 0.0001) {
+          c.vy -= push;
+        } else {
+          c.vx += (dx / dist) * push;
+          c.vy += (dy / dist) * push;
+        }
+        c.onGround = false;
+        // Velocidade ABSOLUTA depois do empurrao: o cliente copia esse valor
+        // em vez de recalcular o impulso, entao os dois lados nunca divergem.
+        events.push({ kind: 'knockback', tick: evTick, playerId: c.id, vx: c.vx, vy: c.vy });
+        applyDamage(c, Math.round(w.damage * falloff * p.angleBonus * dmgScale), 'blast', evTick, events);
+      } else {
+        // Fora do raio de dano mas dentro do halo do vortice: so puxao pro
+        // centro, sem ferir -- e a "sucção" antes do estouro de verdade.
+        const pullFalloff = 1 - (dist - radius) / pullOuter;
+        const pull = (w.vortexPull ?? 0) * pullFalloff;
+        if (dist > 0.0001) {
+          c.vx -= (dx / dist) * pull;
+          c.vy -= (dy / dist) * pull;
+        }
+        c.onGround = false;
+        events.push({ kind: 'knockback', tick: evTick, playerId: c.id, vx: c.vx, vy: c.vy });
+      }
     }
+  };
 
-    const falloff = 1 - dist / w.radius;
+  blastAt(p.x, p.y, w.radius, p.id, 1, tick);
 
-    // Empurrao: direcao radial, forte no epicentro. Se estiver exatamente no
-    // centro, joga pra cima em vez de dividir por zero.
-    const push = w.knockback * falloff;
-    if (dist < 0.0001) {
-      c.vy -= push;
-    } else {
-      c.vx += (dx / dist) * push;
-      c.vy += (dy / dist) * push;
+  if (w.cluster) {
+    const n = w.cluster;
+    const spread = w.clusterSpread ?? 60;
+    const subRadius = Math.max(8, Math.round(w.radius * (w.clusterRadiusFactor ?? 0.5)));
+    const gap = w.clusterTickGap ?? 0;
+    for (let i = 0; i < n; i++) {
+      const f = n === 1 ? 0 : (i / (n - 1)) * 2 - 1; // -1..1, leque simetrico
+      const ox = p.x + f * spread;
+      const oy = p.y - Math.abs(f) * spread * 0.35;
+      blastAt(ox, oy, subRadius, p.id * 1000 + i + 1, 0.6, tick + i * gap);
     }
-    c.onGround = false;
-    // Velocidade ABSOLUTA depois do empurrao: o cliente copia esse valor em vez
-    // de recalcular o impulso, entao os dois lados nunca divergem.
-    events.push({ kind: 'knockback', tick, playerId: c.id, vx: c.vx, vy: c.vy });
-
-    applyDamage(c, Math.round(w.damage * falloff * p.angleBonus), 'blast', tick, events);
   }
 }
 

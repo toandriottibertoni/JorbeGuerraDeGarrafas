@@ -173,6 +173,13 @@ export function sfxDeath(): void {
   tone({ freqFrom: 300, freqTo: 60, duration: 0.4, type: 'sine', gain: 0.15, delay: 0.05 });
 }
 
+/** Chapinha n'agua + "gluglu" grave — mapa da ponte, cair no rio mata. */
+export function sfxSplash(): void {
+  burst(0.2, { lowpass: 900, gain: 0.24 });
+  tone({ freqFrom: 260, freqTo: 40, duration: 0.35, type: 'sine', gain: 0.16, delay: 0.04 });
+  tone({ freqFrom: 180, freqTo: 30, duration: 0.3, type: 'sine', gain: 0.1, delay: 0.16 });
+}
+
 /** Sino de alarme — fabrica atingida (vida perdida). */
 export function sfxAlarm(): void {
   tone({ freqFrom: 900, duration: 0.15, type: 'sawtooth', gain: 0.15 });
@@ -188,6 +195,15 @@ export function sfxRoundStart(): void {
 export function sfxPickup(kind: 'health' | 'ammo'): void {
   const notes = kind === 'health' ? [520, 660, 880] : [440, 660, 990];
   notes.forEach((f, i) => tone({ freqFrom: f, duration: 0.09, type: 'triangle', gain: 0.16, delay: i * 0.06 }));
+}
+
+/** Tiro estourou um engradado no ar — crack seco de madeira quebrando + o premio chegando. */
+export function sfxCrateBurst(): void {
+  burst(0.12, { highpass: 900, gain: 0.22 });
+  tone({ freqFrom: 220, freqTo: 90, duration: 0.12, type: 'square', gain: 0.14, delay: 0.01 });
+  [660, 880, 1100].forEach((f, i) =>
+    tone({ freqFrom: f, duration: 0.08, type: 'triangle', gain: 0.15, delay: 0.1 + i * 0.055 }),
+  );
 }
 
 export function sfxUiHover(): void {

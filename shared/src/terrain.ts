@@ -35,6 +35,8 @@ export interface MapDef {
   relief: number;
   /** Quantidade de cavernas: 0 = macico, 1 = queijo suico. */
   caves: number;
+  /** Viaduto fino sobre agua em vez de morro/caverna -- ver `generateBridge`. */
+  bridge?: boolean;
 }
 
 // `relief` e em pixels absolutos — escalado junto com o corte de MAP_HEIGHT
@@ -44,6 +46,11 @@ export const MAPS: readonly MapDef[] = [
   { id: 'fabrica', name: 'Fabrica', groundLevel: 0.62, relief: 114, caves: 0.5 },
   { id: 'praia', name: 'Praia', groundLevel: 0.7, relief: 66, caves: 0.2 },
   { id: 'deposito', name: 'Deposito', groundLevel: 0.55, relief: 156, caves: 0.75 },
+  // Inspirado na Ponte Rio-Niteroi: vao central mais alto (o de verdade tem
+  // 72m de altura e 300m de vao livre pra passagem de navio), deck fino e
+  // destrutivel sobre o rio. Estrategia propria: derrubar o adversario na
+  // agua mata igual a estourar ele.
+  { id: 'ponte', name: 'Ponte Rio-Niteroi', groundLevel: 0.42, relief: 0, caves: 0, bridge: true },
 ];
 
 export function getMap(id: string): MapDef {
@@ -74,6 +81,11 @@ export class Terrain {
   static generate(mapId: string, seed: number): Terrain {
     const def = getMap(mapId);
     const t = new Terrain(MAP_WIDTH, MAP_HEIGHT);
+    if (def.bridge) {
+      generateBridge(t, def, seed);
+      return t;
+    }
+
     const { width, height, data } = t;
     const baseY = height * def.groundLevel;
 
@@ -145,7 +157,8 @@ export class Terrain {
         const dx = x - cx;
         if (dx * dx + dy2 > r2) continue;
         const idx = row + x;
-        if (this.data[idx] === Mat.ROCK) continue;
+        // Rocha resiste, e agua nao vira ar (nao faz sentido "estourar" um rio).
+        if (this.data[idx] === Mat.ROCK || this.data[idx] === Mat.LIQUID) continue;
         this.data[idx] = Mat.AIR;
       }
     }
@@ -170,6 +183,65 @@ export class Terrain {
     const d = this.dirty;
     this.dirty = [];
     return d;
+  }
+}
+
+/**
+ * Ponte Rio-Niteroi: em vez de morro/caverna, um deck fino e destrutivel
+ * suspenso sobre o rio. O vao central sobe (parabola, sem seno/cosseno —
+ * fisica compartilhada nunca usa trig) feito o vao livre de verdade, mais
+ * alto pra passagem de navio. Cair no rio mata igual ao vazio: a estrategia
+ * do mapa e derrubar o adversario na agua, nao so estourar ele no lugar.
+ */
+function generateBridge(t: Terrain, def: MapDef, seed: number): void {
+  const { width, height, data } = t;
+  const deckBaseY = height * def.groundLevel;
+  const deckThickness = 30;
+  const archHalfWidth = width * 0.22;
+  const archHeight = 46;
+  const waterY = height * 0.86;
+  const floorY = height - 24;
+
+  const archAt = (x: number): number => {
+    const dCenter = Math.abs(x - width / 2);
+    if (dCenter >= archHalfWidth) return 0;
+    return archHeight * (1 - (dCenter / archHalfWidth) ** 2);
+  };
+
+  for (let x = 0; x < width; x++) {
+    // Textura leve na superficie do deck, pra nao ficar reta demais.
+    const n = noise1(x, 140, seed) - 0.5;
+    const surface = Math.floor(deckBaseY - archAt(x) + n * 4);
+    const deckBottom = surface + deckThickness;
+
+    for (let y = Math.max(0, surface); y < height; y++) {
+      const idx = y * width + x;
+      if (y >= floorY) {
+        data[idx] = Mat.ROCK;
+      } else if (y < deckBottom) {
+        data[idx] = Mat.DIRT;
+      } else if (y >= waterY) {
+        data[idx] = Mat.LIQUID;
+      }
+      // Entre o fundo do deck e a agua: ar de proposito (queda livre ate o rio).
+    }
+  }
+
+  // Pilares indestrutiveis descendo do deck ate o rio — apoio estrutural (feito
+  // os pilares de verdade) e cobertura tatica no meio do vao.
+  const pillarWidth = 16;
+  const pillarSpots = 5;
+  for (let i = 1; i < pillarSpots; i++) {
+    const px = Math.floor((width / pillarSpots) * i);
+    const topY = Math.max(0, Math.floor(deckBaseY - archAt(px)));
+    const half = pillarWidth / 2;
+    for (let y = topY; y < floorY; y++) {
+      for (let dx = -half; dx < half; dx++) {
+        const x = Math.floor(px + dx);
+        if (x < 0 || x >= width) continue;
+        data[y * width + x] = Mat.ROCK;
+      }
+    }
   }
 }
 

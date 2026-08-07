@@ -163,6 +163,20 @@ export function createGateway(io: Server): RoomManager {
       }),
     );
 
+    socket.on('roomRemoveDummy', (req) =>
+      guard(() => {
+        const err = rooms.removeDummy(socket.id, String(req?.dummyId ?? ''));
+        if (err) socket.emit('errorMsg', err);
+      }),
+    );
+
+    socket.on('roomSetMap', (req) =>
+      guard(() => {
+        const err = rooms.setMap(socket.id, String(req?.mapId ?? ''));
+        if (err) socket.emit('errorMsg', err);
+      }),
+    );
+
     socket.on('roomStart', () =>
       guard(() => {
         const err = rooms.startMatch(socket.id);

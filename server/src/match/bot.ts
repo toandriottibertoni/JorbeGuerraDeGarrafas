@@ -60,7 +60,10 @@ export function pickBotWeapon(ammo: Record<string, number | null>, rng: Rng): We
   const usable = WEAPONS.filter((w) => {
     if (w.defensive) return false;
     const a = ammo[w.id];
-    return a === null || a === undefined || a > 0;
+    // null = infinita de proposito (tampinha). undefined so acontece se a
+    // arma nunca foi seedada no inventario -- trata como sem municao, nunca
+    // como infinita (senao um buraco no seed vira "arma infinita de graca").
+    return a === null || (a !== undefined && a > 0);
   });
   if (usable.length === 0) return WEAPONS[0];
 
