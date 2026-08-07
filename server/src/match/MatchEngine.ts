@@ -382,7 +382,11 @@ export class MatchEngine {
 
     for (const id of this.order) {
       const p = this.players.get(id)!;
-      stepCharacter(this.terrain, p.char, p.input, dt, 0, events);
+      // Travou o tiro: fica parado (mas continua caindo/assentando por
+      // gravidade) ate cancelar — travar so a mira e deixar o movimento solto
+      // permitia "atirar e fugir" com o combustivel que sobrava.
+      const input = p.aim?.fire ? NO_INPUT : p.input;
+      stepCharacter(this.terrain, p.char, input, dt, 0, events);
     }
 
     // Mesmo no preparo alguem pode andar pra fora do mapa e morrer.

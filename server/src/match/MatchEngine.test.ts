@@ -125,6 +125,34 @@ test('input move o Jorbe e consome combustivel', () => {
   assert.ok(last.fuel < 400, `combustivel deveria ter sido gasto, veio ${last.fuel}`);
 });
 
+test('travar o tiro tambem trava o movimento (sem atirar e fugir)', () => {
+  const { engine, sink } = makeMatch(2);
+  engine.start();
+  advance(engine, 1); // deixa assentar no chao
+
+  engine.applyAim('p0', { angle: 45, power: 50, weaponId: 'tampinha', fire: true });
+
+  const before = (sink.playerEventsOf('p0', 'snapshot').at(-1) as { players: { id: string; x: number }[] })
+    .players.find((p) => p.id === 'p0')!.x;
+
+  engine.applyInput('p0', { seq: 1, left: false, right: true, jump: false });
+  advance(engine, 2);
+
+  const after = (sink.playerEventsOf('p0', 'snapshot').at(-1) as { players: { id: string; x: number }[] })
+    .players.find((p) => p.id === 'p0')!.x;
+
+  assert.equal(after, before, 'travado, nao deveria se mover mesmo recebendo input de andar');
+
+  // Cancela o tiro (destrava) — o input de andar que ja estava guardado volta a valer.
+  engine.applyAim('p0', { angle: 45, power: 50, weaponId: 'tampinha', fire: false });
+  advance(engine, 2);
+
+  const afterCancel = (sink.playerEventsOf('p0', 'snapshot').at(-1) as { players: { id: string; x: number }[] })
+    .players.find((p) => p.id === 'p0')!.x;
+
+  assert.ok(afterCancel > after, `destravado deveria voltar a andar pra direita: ${after} -> ${afterCancel}`);
+});
+
 test('input com seq antigo e ignorado (protecao contra pacote fora de ordem)', () => {
   const { engine } = makeMatch(2);
   engine.start();

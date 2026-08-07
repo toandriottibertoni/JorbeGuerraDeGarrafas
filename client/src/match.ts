@@ -718,6 +718,14 @@ export class MatchScene {
     return x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y + r.h;
   }
 
+  /** Encurta o texto com reticencias ate caber em maxWidth — `ctx.fillText` nao clipa nem quebra linha sozinho. */
+  private fitText(ctx: CanvasRenderingContext2D, text: string, maxWidth: number): string {
+    if (ctx.measureText(text).width <= maxWidth) return text;
+    let t = text;
+    while (t.length > 1 && ctx.measureText(`${t}…`).width > maxWidth) t = t.slice(0, -1);
+    return `${t}…`;
+  }
+
   private selectWeapon(idx: number): void {
     if (this.aimLocked || idx < 0 || idx >= WEAPONS.length || WEAPONS[idx]!.defensive) return;
     this.weaponIdx = idx;
@@ -1022,14 +1030,20 @@ export class MatchScene {
     const self = this.players.get(this.ownId);
     if (!self || !self.alive || !this.terrain) return;
 
-    const jumpDown = this.keys.has('shift');
+    // Travou o tiro: sem movimento (mas a fisica local continua rodando —
+    // gravidade/queda — pra nao dessincronizar do servidor, que faz o mesmo).
+    // Senao dava pra travar o tiro e ainda fugir com o combustivel que sobrou.
+    const jumpDown = !this.aimLocked && this.keys.has('shift');
     if (jumpDown && !this.wasJumpKeyDown && self.onGround) {
       sfx.sfxJump();
       self.rig.squash.kick(220);
     }
     this.wasJumpKeyDown = jumpDown;
 
-    const walking = self.onGround && (this.keys.has('a') || this.keys.has('d') || this.keys.has('arrowleft') || this.keys.has('arrowright'));
+    const walking =
+      !this.aimLocked &&
+      self.onGround &&
+      (this.keys.has('a') || this.keys.has('d') || this.keys.has('arrowleft') || this.keys.has('arrowright'));
     if (walking && self.rig.walkAmp > 0.6) {
       const stepEvery = Math.PI;
       const phaseInStep = self.rig.walkPhase % stepEvery;
@@ -1046,11 +1060,13 @@ export class MatchScene {
 
     while (this.inputAcc >= stepMs) {
       this.inputAcc -= stepMs;
-      const input: MoveInput = {
-        left: this.keys.has('a') || this.keys.has('arrowleft'),
-        right: this.keys.has('d') || this.keys.has('arrowright'),
-        jump: this.keys.has('shift'),
-      };
+      const input: MoveInput = this.aimLocked
+        ? { left: false, right: false, jump: false }
+        : {
+            left: this.keys.has('a') || this.keys.has('arrowleft'),
+            right: this.keys.has('d') || this.keys.has('arrowright'),
+            jump: this.keys.has('shift'),
+          };
       this.inputSeq += 1;
       this.net.sendInput({ seq: this.inputSeq, ...input });
       this.pending.push({ seq: this.inputSeq, input });
@@ -1689,15 +1705,17 @@ export class MatchScene {
         ctx.font = 'bold 12px Georgia, serif';
         ctx.fillText(`${i + 1}`, card.x + card.w / 2, card.y + 44);
         ctx.font = '11px Georgia, serif';
-        ctx.fillText(ammoLabel, card.x + card.w / 2, card.y + 57);
+        ctx.fillText(this.fitText(ctx, ammoLabel, card.w - 8), card.x + card.w / 2, card.y + 57);
         ctx.textAlign = 'left';
       } else {
         drawWeaponIcon(ctx, w.id, card.x + 24, card.y + 31, 30, iconColor);
         ctx.fillStyle = textColor;
         ctx.font = 'bold 14px Georgia, serif';
-        ctx.fillText(`${i + 1}. ${w.name}`, card.x + 48, card.y + 24);
+        const nameMaxW = card.w - 48 - 6;
+        ctx.fillText(this.fitText(ctx, `${i + 1}. ${w.name}`, nameMaxW), card.x + 48, card.y + 24);
         ctx.font = '13px Georgia, serif';
-        ctx.fillText(ammo === null || ammo === undefined ? 'infinita' : `${ammo} restantes`, card.x + 48, card.y + 44);
+        const ammoText = ammo === null || ammo === undefined ? 'infinita' : `${ammo} restantes`;
+        ctx.fillText(this.fitText(ctx, ammoText, nameMaxW), card.x + 48, card.y + 44);
       }
     });
 
@@ -1713,7 +1731,8 @@ export class MatchScene {
       const wx = this.weaponCardRect(WEAPONS.length - 1).x + this.weaponCardRect(WEAPONS.length - 1).w;
       ctx.font = '15px Georgia, serif';
       ctx.fillStyle = PALETTE.crust;
-      ctx.fillText(status, wx + 10, y + 40);
+      const statusMaxW = this.cam.viewW - wx - 20;
+      ctx.fillText(this.fitText(ctx, status, statusMaxW), wx + 10, y + 40);
     } else {
       ctx.font = '13px Georgia, serif';
       ctx.fillStyle = PALETTE.crust;
