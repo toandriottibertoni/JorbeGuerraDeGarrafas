@@ -21,7 +21,8 @@ export const SNAPSHOT_RATE = 15;
 
 /** Duracao das fases da rodada, em segundos. */
 export const PHASE_PREP_SECONDS = 30;
-export const PHASE_INTERVAL_SECONDS = 6;
+/** Pausa entre o fim da resolucao (todo tiro ja acertou) e o proximo preparo. */
+export const PHASE_INTERVAL_SECONDS = 3;
 /**
  * Quando todos os jogadores humanos vivos travam o tiro, a rodada nao
  * precisa esperar o resto do timer — resolve com essa folga curta, so pra
@@ -63,7 +64,9 @@ export const MAX_STEP_UP = 7;
 
 /** Mundo. */
 export const GRAVITY = 520; // px/s^2
-export const WIND_MAX = 30; // px/s^2 lateral, sorteado por rodada
+export const WIND_MAX = 30; // px/s^2 lateral, teto absoluto
+/** Quanto o vento pode variar de uma rodada pra outra — passeio suave em vez de sorteio do zero. */
+export const WIND_MAX_DELTA = 12;
 /** Atrito do ar aplicado ao knockback do personagem, por segundo. */
 export const KNOCKBACK_DRAG = 1.6;
 

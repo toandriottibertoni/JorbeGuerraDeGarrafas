@@ -300,14 +300,14 @@ test('desconectar elimina o jogador sem travar a partida', () => {
 test('input e mira sao ignorados fora da fase de preparo', () => {
   const { engine, sink } = makeMatch(2);
   engine.start();
-  advance(engine, 31); // entra em resolucao
+  advance(engine, 15); // esgota o preparo de 15s (2 jogadores) e entra na resolucao
 
   engine.applyAim('p0', { angle: 45, power: 100, weaponId: 'bazuca', fire: true });
-  advance(engine, 3);
+  advance(engine, 0.2); // ainda dentro da resolucao curta (sem tiros, ~0.5s)
 
   const plans = sink.eventsOf('roundResolve') as ResolutionPlan[];
-  // A mira mandada durante a resolucao nao pode entrar no plano ja emitido.
-  assert.equal(plans.length, 1);
+  assert.equal(plans.length, 1, 'ainda na mesma resolucao, nao pode ter gerado um segundo plano');
+  assert.equal(plans[0].shots.length, 0, 'mira mandada durante a resolucao nao pode virar tiro');
 });
 
 test('partida de 15 jogadores atirando junto resolve sem estourar o teto', () => {

@@ -30,6 +30,7 @@ import {
 } from '@jorbe/shared';
 import {
   Camera,
+  FloatingTexts,
   IDLE_ANIM,
   INK,
   PALETTE,
@@ -110,6 +111,9 @@ interface Playback {
   eventIdx: number;
   projectiles: Map<number, PlaybackProjectile>;
   lastBoom: { x: number; y: number } | null;
+  /** Id do proprio tiro nesta rodada (se atirou) — pra registrar o rastro. */
+  selfShotId: number | null;
+  selfTrail: { x: number; y: number }[];
 }
 
 const CHARGE_PER_SECOND = 70;
@@ -134,14 +138,33 @@ const WEAPON_WEIGHT: Record<string, 'light' | 'medium' | 'heavy'> = {
  * cima dele, nunca influencia a simulacao.
  */
 export class MatchScene {
-  /** Altura do painel inferior do HUD — geometria compartilhada por desenho e clique. */
-  private static readonly HUD_H = 124;
+  /** Abaixo disso a HUD nao cabe numa linha so — empilha em varias. */
+  private static readonly HUD_COMPACT_BREAKPOINT = 860;
+  private static readonly FIRED_BEFORE_KEY = 'jorbe_fired_before';
+
+  /** localStorage pode estar bloqueado (modo privado, iframe restrito) — nesse caso so mostra o tutorial sempre. */
+  private static readNeverFired(): boolean {
+    try {
+      return !localStorage.getItem(MatchScene.FIRED_BEFORE_KEY);
+    } catch {
+      return true;
+    }
+  }
+
+  private static markFired(): void {
+    try {
+      localStorage.setItem(MatchScene.FIRED_BEFORE_KEY, '1');
+    } catch {
+      // Sem storage disponivel — sem problema, so volta a mostrar na proxima vez.
+    }
+  }
 
   private readonly canvas: HTMLCanvasElement;
   private readonly ctx: CanvasRenderingContext2D;
   private readonly cam = new Camera();
   private readonly particles = new Particles();
   private readonly shockwaves = new Shockwaves();
+  private readonly floatingTexts = new FloatingTexts();
   private readonly net: Net;
 
   private terrain: Terrain | null = null;
@@ -174,6 +197,12 @@ export class MatchScene {
   private readonly cancelBtn: HTMLButtonElement;
   private readonly leaveBtn: HTMLButtonElement;
   private readonly readyBtn: HTMLButtonElement;
+  private readonly chatBox: HTMLDivElement;
+  private readonly chatToggleBtn: HTMLButtonElement;
+  private readonly chatLogEl: HTMLDivElement;
+  private readonly chatInputEl: HTMLInputElement;
+  private chatOpen = false;
+  private chatUnread = 0;
   /** O que valia na rodada anterior — vento, e meu ultimo angulo/forca ajustados. */
   private history: { wind: number; angle: number; power: number } | null = null;
   private crates: CrateDef[] = [];
@@ -181,6 +210,10 @@ export class MatchScene {
   private crateSpawnClock = new Map<number, number>();
   /** Dano/abates acumulados da partida inteira, por jogador — pro painel flutuante. */
   private stats = new Map<string, { damage: number; kills: number }>();
+  /** Trajeto real do proprio ultimo tiro — desenhado tracejado enquanto mira o proximo. */
+  private lastShotTrail: { x: number; y: number }[] | null = null;
+  /** So true ate o jogador atirar pela primeira vez neste navegador — ensina a atirar. */
+  private showFireTutorial = MatchScene.readNeverFired();
 
   private playback: Playback | null = null;
   private playAcc = 0;
@@ -242,7 +275,95 @@ export class MatchScene {
     };
     document.body.appendChild(this.readyBtn);
 
+    // Chat da partida — recolhido por padrao pra nao atrapalhar o jogo, com
+    // aviso de mensagem nao lida no botao enquanto fechado.
+    this.chatBox = document.createElement('div');
+    this.chatBox.id = 'matchChat';
+    this.chatBox.style.display = 'none';
+
+    this.chatToggleBtn = document.createElement('button');
+    this.chatToggleBtn.id = 'matchChatToggle';
+    this.chatToggleBtn.className = 'ghost';
+    this.chatToggleBtn.textContent = 'Chat';
+    this.chatToggleBtn.onclick = () => {
+      sfx.sfxUiClick();
+      this.setChatOpen(!this.chatOpen);
+    };
+    this.chatBox.appendChild(this.chatToggleBtn);
+
+    const chatPanel = document.createElement('div');
+    chatPanel.id = 'matchChatPanel';
+
+    this.chatLogEl = document.createElement('div');
+    this.chatLogEl.id = 'matchChatLog';
+    chatPanel.appendChild(this.chatLogEl);
+
+    const chatRow = document.createElement('div');
+    chatRow.id = 'matchChatRow';
+    this.chatInputEl = document.createElement('input');
+    this.chatInputEl.id = 'matchChatInput';
+    this.chatInputEl.maxLength = 160;
+    this.chatInputEl.placeholder = 'Falar com a sala...';
+    this.chatInputEl.autocomplete = 'off';
+    // Impede que teclas do chat (A/D/W/S/ESPACO/1-3/C...) cheguem no jogo.
+    this.chatInputEl.addEventListener('keydown', (e) => e.stopPropagation());
+    this.chatInputEl.addEventListener('keyup', (e) => e.stopPropagation());
+    // Focar o chat solta qualquer tecla de jogo que tenha ficado "presa"
+    // (ex: segurando ESPACO e clicando pra digitar) sem disparar o tiro.
+    this.chatInputEl.addEventListener('focus', () => {
+      this.keys.clear();
+      this.charging = false;
+    });
+    const chatSendBtn = document.createElement('button');
+    chatSendBtn.id = 'matchChatSend';
+    chatSendBtn.textContent = 'Enviar';
+    const sendChat = (): void => {
+      const text = this.chatInputEl.value.trim();
+      if (!text) return;
+      this.net.socket.emit('chat', { text });
+      this.chatInputEl.value = '';
+    };
+    chatSendBtn.onclick = sendChat;
+    this.chatInputEl.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') sendChat();
+    });
+    chatRow.appendChild(this.chatInputEl);
+    chatRow.appendChild(chatSendBtn);
+    chatPanel.appendChild(chatRow);
+
+    this.chatBox.appendChild(chatPanel);
+    document.body.appendChild(this.chatBox);
+    this.setChatOpen(false);
+
     this.bindNet();
+  }
+
+  private setChatOpen(open: boolean): void {
+    this.chatOpen = open;
+    this.chatBox.classList.toggle('open', open);
+    if (open) {
+      this.chatUnread = 0;
+      this.chatToggleBtn.textContent = 'Chat';
+      this.chatLogEl.scrollTop = this.chatLogEl.scrollHeight;
+      this.chatInputEl.focus();
+    }
+  }
+
+  private onChatMessage(msg: { from: string; text: string }): void {
+    const line = document.createElement('div');
+    const b = document.createElement('b');
+    b.textContent = `${msg.from}: `;
+    line.appendChild(b);
+    line.appendChild(document.createTextNode(msg.text));
+    this.chatLogEl.appendChild(line);
+    while (this.chatLogEl.childNodes.length > 60) this.chatLogEl.removeChild(this.chatLogEl.firstChild!);
+
+    if (this.chatOpen) {
+      this.chatLogEl.scrollTop = this.chatLogEl.scrollHeight;
+    } else {
+      this.chatUnread += 1;
+      this.chatToggleBtn.textContent = `Chat (${this.chatUnread})`;
+    }
   }
 
   // -------------------------------------------------------------------------
@@ -265,6 +386,7 @@ export class MatchScene {
       this.crateSpawnClock = fresh;
     });
     s.on('cratePicked', (data: CratePicked) => this.onCratePicked(data));
+    s.on('chat', (msg: { from: string; text: string; at: number }) => this.onChatMessage(msg));
     s.on('matchStats', (list: PlayerStat[]) => {
       this.stats = new Map(list.map((s) => [s.playerId, { damage: s.damage, kills: s.kills }]));
     });
@@ -313,6 +435,7 @@ export class MatchScene {
     // sem paraquedas.
     this.crateSpawnClock = new Map(data.crates.map((c) => [c.id, -999]));
     this.stats = new Map();
+    this.lastShotTrail = null;
     this.finalResult = null;
     this.phase = 'interval';
     const self = this.players.get(this.ownId);
@@ -455,7 +578,8 @@ export class MatchScene {
       sfx.sfxShot(WEAPON_WEIGHT[s.weaponId] ?? 'light');
     }
 
-    this.playback = { plan, tick: 0, eventIdx: 0, projectiles, lastBoom: null };
+    const selfShotId = plan.shots.find((s) => s.ownerId === this.ownId)?.id ?? null;
+    this.playback = { plan, tick: 0, eventIdx: 0, projectiles, lastBoom: null, selfShotId, selfTrail: [] };
     this.camFollowSelf = false;
     this.showBanner('Fogo!', 1200);
   }
@@ -492,6 +616,7 @@ export class MatchScene {
   };
 
   private onKeyDown = (e: KeyboardEvent): void => {
+    if (document.activeElement === this.chatInputEl) return;
     if (e.repeat) return;
     const k = e.key.toLowerCase();
     this.keys.add(k);
@@ -508,6 +633,7 @@ export class MatchScene {
   };
 
   private onKeyUp = (e: KeyboardEvent): void => {
+    if (document.activeElement === this.chatInputEl) return;
     const k = e.key.toLowerCase();
     this.keys.delete(k);
     if (k === ' ' && this.charging) {
@@ -516,17 +642,47 @@ export class MatchScene {
     }
   };
 
+  /** Abaixo da largura de corte, empilha tudo em varias linhas em vez de uma so. */
+  private get compactHud(): boolean {
+    return this.cam.viewW < MatchScene.HUD_COMPACT_BREAKPOINT;
+  }
+
+  /** Altura do painel inferior do HUD — cresce no modo empilhado pra caber as linhas extras. */
+  private get hudH(): number {
+    return this.compactHud ? 232 : 124;
+  }
+
   /** Y do topo do painel inferior do HUD — usado tanto pra desenhar quanto pra testar clique. */
   private get hudY(): number {
-    return this.cam.viewH - MatchScene.HUD_H;
+    return this.cam.viewH - this.hudH;
   }
 
   private weaponCardRect(i: number): { x: number; y: number; w: number; h: number } {
-    return { x: 400 + i * 164, y: this.hudY + 14, w: 156, h: 62 };
+    if (!this.compactHud) {
+      return { x: 400 + i * 164, y: this.hudY + 14, w: 156, h: 62 };
+    }
+    const margin = 14;
+    const gap = 8;
+    const count = WEAPONS.length;
+    const w = Math.min(156, (this.cam.viewW - margin * 2 - gap * (count - 1)) / count);
+    return { x: margin + i * (w + gap), y: this.hudY + 118, w, h: 62 };
   }
 
   private forceBarRect(): { x: number; y: number; w: number; h: number } {
-    return { x: 195, y: this.hudY + 44, w: 190, h: 14 };
+    if (!this.compactHud) {
+      return { x: 195, y: this.hudY + 44, w: 190, h: 14 };
+    }
+    const x = 14;
+    return { x, y: this.hudY + 66, w: Math.max(80, this.cam.viewW - x - 60), h: 14 };
+  }
+
+  /** Retangulo da barra de combustivel — depende do modo compacto assim como a de forca. */
+  private fuelBarRect(): { x: number; y: number; w: number; h: number } {
+    if (!this.compactHud) {
+      return { x: 195, y: this.hudY + 72, w: 190, h: 12 };
+    }
+    const x = 14;
+    return { x, y: this.hudY + 96, w: this.cam.viewW - x * 2, h: 12 };
   }
 
   private inRect(x: number, y: number, r: { x: number; y: number; w: number; h: number }): boolean {
@@ -649,6 +805,9 @@ export class MatchScene {
     this.canvas.style.height = `${h}px`;
     this.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     this.cam.setViewport(w, h);
+    // Os botoes de DOM (cancelar/OK) ficam presos ao topo da HUD via CSS —
+    // ela muda de altura no modo empilhado, entao o offset precisa acompanhar.
+    document.documentElement.style.setProperty('--hud-h', `${this.hudH}px`);
   };
 
   private get weapon(): (typeof WEAPONS)[number] {
@@ -674,6 +833,10 @@ export class MatchScene {
     this.aimLocked = true;
     this.sendAim(true);
     this.showBanner('Tiro travado — aguardando a rodada', 1500);
+    if (this.showFireTutorial) {
+      this.showFireTutorial = false;
+      MatchScene.markFired();
+    }
 
     // Coice imediato no proprio Jorbe — feedback instantaneo, antes mesmo do
     // servidor confirmar. E so cosmetico, a fisica de verdade so roda na
@@ -737,6 +900,7 @@ export class MatchScene {
     this.clock += dt;
     this.particles.update(dt);
     this.shockwaves.update(dt);
+    this.floatingTexts.update(dt);
     this.cam.updateShake(dt);
     this.tickPulse = Math.max(0, this.tickPulse - dt * 5);
 
@@ -763,6 +927,7 @@ export class MatchScene {
     this.cancelBtn.style.display = inPrep && this.aimLocked ? 'block' : 'none';
     this.readyBtn.style.display = inPrep && !this.aimLocked && this.canFire() ? 'block' : 'none';
     this.leaveBtn.style.display = this.terrainRenderer ? 'block' : 'none';
+    this.chatBox.style.display = this.terrainRenderer ? 'flex' : 'none';
   }
 
   /** Avanca as molas de animacao de um Jorbe: caminhada, esprime e coice. */
@@ -878,6 +1043,8 @@ export class MatchScene {
             this.particles.puff(p.x, p.y, PALETTE.smoke, 1);
           }
         }
+
+        if (p.id === pb.selfShotId) pb.selfTrail.push({ x: p.x, y: p.y });
       }
 
       // 2) Eventos autoritativos deste tick.
@@ -911,6 +1078,7 @@ export class MatchScene {
         p.hp = fs.hp;
         p.alive = fs.alive;
       }
+      if (pb.selfTrail.length > 1) this.lastShotTrail = pb.selfTrail;
       this.playback = null;
       this.phase = 'interval';
     }
@@ -958,6 +1126,7 @@ export class MatchScene {
         // hp e absoluto: mesmo que a predicao local tenha errado, aqui corrige.
         if (p) this.applyDamageFeedback(p, e.hp);
         if (p) p.hp = e.hp;
+        if (p) this.floatingTexts.spawn(p.x, p.y - JORBE_HEIGHT - 10, `-${Math.round(e.amount)}`, PALETTE.red);
         break;
       }
       case 'death': {
@@ -1016,6 +1185,20 @@ export class MatchScene {
 
     ctx.drawImage(this.terrainRenderer.canvas, 0, 0);
 
+    if (this.lastShotTrail && this.phase === 'prep') {
+      ctx.save();
+      ctx.setLineDash([7, 7]);
+      ctx.strokeStyle = 'rgba(244,228,193,0.4)';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(this.lastShotTrail[0]!.x, this.lastShotTrail[0]!.y);
+      for (let i = 1; i < this.lastShotTrail.length; i++) {
+        ctx.lineTo(this.lastShotTrail[i]!.x, this.lastShotTrail[i]!.y);
+      }
+      ctx.stroke();
+      ctx.restore();
+    }
+
     for (const crate of this.crates) {
       const weapon = crate.weaponId ? getWeapon(crate.weaponId) : null;
       const spawnAt = this.crateSpawnClock.get(crate.id) ?? this.clock;
@@ -1056,8 +1239,16 @@ export class MatchScene {
         isSelf,
         aimAngle: isSelf && this.phase === 'prep' && p.alive ? this.aimAngle : null,
         aimPower: (Math.max(MIN_POWER, this.power) - MIN_POWER) / (MAX_POWER - MIN_POWER),
+        aimLabel:
+          isSelf && this.phase === 'prep' && p.alive && !this.showFireTutorial
+            ? `${this.aimAngle.toFixed(0)}° · ${Math.round(this.power)}`
+            : null,
         anim: p.alive ? anim : { ...IDLE_ANIM, hitFlash: 0 },
       });
+
+      if (isSelf && this.showFireTutorial && this.phase === 'prep' && !this.aimLocked && p.alive) {
+        this.drawFireTutorialBalloon(ctx, p);
+      }
     }
 
     if (this.playback) {
@@ -1068,6 +1259,7 @@ export class MatchScene {
 
     this.particles.draw(ctx);
     this.shockwaves.draw(ctx);
+    this.floatingTexts.draw(ctx);
     ctx.restore();
 
     this.drawHud();
@@ -1079,6 +1271,9 @@ export class MatchScene {
   /** Painel flutuante e transparente: quem mais deu dano e quem mais matou ate agora. */
   private drawStatsPanel(ctx: CanvasRenderingContext2D): void {
     if (this.round === 0) return;
+    // Na HUD empilhada o botao OK/cancelar e o painel de prontidao ja disputam
+    // esse mesmo canto durante o preparo — o placar volta a aparecer entre rodadas.
+    if (this.compactHud && this.phase === 'prep') return;
     const rows = [...this.players.values()]
       .map((p) => ({ p, s: this.stats.get(p.id) ?? { damage: 0, kills: 0 } }))
       .filter((r) => r.s.damage > 0 || r.s.kills > 0)
@@ -1090,13 +1285,13 @@ export class MatchScene {
     const topKillId = [...rows].sort((a, b) => b.s.kills - a.s.kills)[0]!;
     const topKillsValue = topKillId.s.kills;
 
-    const w = 208;
+    const w = Math.min(208, this.cam.viewW - 32);
     const rowH = 22;
     const h = 32 + rows.length * rowH;
     // Canto inferior esquerdo, acima da barra do HUD — nunca colide com o
     // minimapa/painel de prontidao (topo direito) nem com o vento (topo centro).
     const x = 16;
-    const y = this.cam.viewH - MatchScene.HUD_H - h - 12;
+    const y = this.cam.viewH - this.hudH - h - 12;
 
     ctx.save();
     ctx.fillStyle = 'rgba(19,8,2,0.7)';
@@ -1129,6 +1324,46 @@ export class MatchScene {
       ctx.textAlign = 'left';
     });
 
+    ctx.restore();
+  }
+
+  /** Balaozinho de tutorial — mostra so ate o jogador atirar pela primeira vez neste navegador. */
+  private drawFireTutorialBalloon(ctx: CanvasRenderingContext2D, p: RemotePlayer): void {
+    const lines = ['Sua vez de atirar!', 'Botao direito arrasta a mira, ou segure ESPACO'];
+    ctx.save();
+    ctx.font = '11px Georgia, serif';
+    const textW = Math.max(...lines.map((l) => ctx.measureText(l).width));
+    const bw = textW + 20;
+    const lineH = 16;
+    const bh = 12 + lines.length * lineH;
+    const bob = Math.sin(this.clock * 3) * 3;
+    const cx = p.x;
+    const by = p.y - JORBE_HEIGHT - 34 - bh + bob;
+    const bx = cx - bw / 2;
+
+    ctx.fillStyle = 'rgba(19,8,2,0.92)';
+    ctx.strokeStyle = PALETTE.bottle;
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.roundRect(bx, by, bw, bh, 8);
+    ctx.fill();
+    ctx.stroke();
+
+    ctx.beginPath();
+    ctx.moveTo(cx - 6, by + bh - 1);
+    ctx.lineTo(cx, by + bh + 8);
+    ctx.lineTo(cx + 6, by + bh - 1);
+    ctx.closePath();
+    ctx.fillStyle = 'rgba(19,8,2,0.92)';
+    ctx.fill();
+
+    ctx.textAlign = 'center';
+    lines.forEach((line, i) => {
+      ctx.font = i === 0 ? 'bold 13px Georgia, serif' : '11px Georgia, serif';
+      ctx.fillStyle = i === 0 ? PALETTE.bottle : PALETTE.cream;
+      ctx.fillText(line, cx, by + 17 + i * lineH);
+    });
+    ctx.textAlign = 'left';
     ctx.restore();
   }
 
@@ -1187,7 +1422,8 @@ export class MatchScene {
     this.drawReadyPanel(ctx, mm);
 
     // Painel inferior
-    const h = MatchScene.HUD_H;
+    const compact = this.compactHud;
+    const h = this.hudH;
     const y = this.hudY;
     ctx.fillStyle = 'rgba(19,8,2,0.88)';
     ctx.fillRect(0, y, this.cam.viewW, h);
@@ -1201,45 +1437,68 @@ export class MatchScene {
     ctx.font = '15px Georgia, serif';
     ctx.fillStyle = PALETTE.cream;
 
-    // Tempo e rodada — pulsa e faz tique-taque nos ultimos segundos.
-    ctx.save();
-    ctx.font = 'bold 27px Georgia, serif';
-    ctx.fillStyle = this.remaining < 6 ? PALETTE.red : PALETTE.crust;
-    ctx.translate(18, y + 36);
-    const pulseScale = 1 + this.tickPulse * 0.4;
-    ctx.scale(pulseScale, pulseScale);
-    ctx.fillText(`${Math.ceil(this.remaining)}s`, 0, 0);
-    ctx.restore();
-    ctx.font = '15px Georgia, serif';
-    ctx.fillStyle = PALETTE.cream;
-    ctx.fillText(`Rodada ${this.round}`, 18, y + 58);
-
-    // Vento
     const windDir = this.wind > 0 ? '>>>' : '<<<';
-    ctx.fillText(
-      `Vento ${Math.abs(this.wind).toFixed(0)} ${Math.abs(this.wind) < 1 ? '--' : windDir}`,
-      18,
-      y + 80,
-    );
+    const windText = `Vento ${Math.abs(this.wind).toFixed(0)} ${Math.abs(this.wind) < 1 ? '--' : windDir}`;
+    const historyText = this.history
+      ? `antes: vento ${Math.abs(this.history.wind).toFixed(0)} ${
+          this.history.wind > 0 ? '>>>' : this.history.wind < 0 ? '<<<' : '--'
+        } · ${this.history.angle.toFixed(0)}° · forca ${Math.round(this.history.power)}`
+      : null;
 
-    // Historico da rodada anterior — pra comparar antes de ajustar de novo.
-    if (this.history) {
-      const hDir = this.history.wind > 0 ? '>>>' : this.history.wind < 0 ? '<<<' : '--';
-      ctx.font = 'italic 12px Georgia, serif';
-      ctx.fillStyle = 'rgba(244,228,193,0.55)';
-      ctx.fillText(
-        `antes: vento ${Math.abs(this.history.wind).toFixed(0)} ${hDir} · ${this.history.angle.toFixed(0)}° · forca ${Math.round(this.history.power)}`,
-        18,
-        y + 102,
-      );
+    if (!compact) {
+      // Tempo e rodada — pulsa e faz tique-taque nos ultimos segundos.
+      ctx.save();
+      ctx.font = 'bold 27px Georgia, serif';
+      ctx.fillStyle = this.remaining < 6 ? PALETTE.red : PALETTE.crust;
+      ctx.translate(18, y + 36);
+      const pulseScale = 1 + this.tickPulse * 0.4;
+      ctx.scale(pulseScale, pulseScale);
+      ctx.fillText(`${Math.ceil(this.remaining)}s`, 0, 0);
+      ctx.restore();
       ctx.font = '15px Georgia, serif';
+      ctx.fillStyle = PALETTE.cream;
+      ctx.fillText(`Rodada ${this.round}`, 18, y + 58);
+      ctx.fillText(windText, 18, y + 80);
+
+      if (historyText) {
+        ctx.font = 'italic 12px Georgia, serif';
+        ctx.fillStyle = 'rgba(244,228,193,0.55)';
+        ctx.fillText(historyText, 18, y + 102);
+        ctx.font = '15px Georgia, serif';
+      }
+
+      // Angulo e forca
+      ctx.fillStyle = PALETTE.cream;
+      ctx.fillText(`Angulo ${this.aimAngle.toFixed(0)} graus`, 130, y + 30);
+      ctx.fillText('Forca (clique/arraste)', 130, y + 54);
+    } else {
+      // Empilhado: cronometro + rodada + vento numa linha soh, o resto embaixo.
+      ctx.save();
+      ctx.font = 'bold 20px Georgia, serif';
+      ctx.fillStyle = this.remaining < 6 ? PALETTE.red : PALETTE.crust;
+      const pulseScale = 1 + this.tickPulse * 0.4;
+      ctx.translate(16, y + 24);
+      ctx.scale(pulseScale, pulseScale);
+      const timerText = `${Math.ceil(this.remaining)}s`;
+      ctx.fillText(timerText, 0, 0);
+      const timerW = ctx.measureText(timerText).width * pulseScale;
+      ctx.restore();
+
+      ctx.font = '14px Georgia, serif';
+      ctx.fillStyle = PALETTE.cream;
+      ctx.fillText(`Rodada ${this.round} · ${windText}`, 16 + timerW + 12, y + 24);
+
+      if (historyText) {
+        ctx.font = 'italic 11px Georgia, serif';
+        ctx.fillStyle = 'rgba(244,228,193,0.55)';
+        ctx.fillText(historyText, 16, y + 42);
+      }
+
+      ctx.font = '14px Georgia, serif';
+      ctx.fillStyle = PALETTE.cream;
+      ctx.fillText(`Angulo ${this.aimAngle.toFixed(0)}°`, 16, y + 60);
     }
 
-    // Angulo e forca
-    ctx.fillStyle = PALETTE.cream;
-    ctx.fillText(`Angulo ${this.aimAngle.toFixed(0)} graus`, 130, y + 30);
-
-    ctx.fillText('Forca (clique/arraste)', 130, y + 54);
     const fbar = this.forceBarRect();
     ctx.fillStyle = 'rgba(244,228,193,0.25)';
     ctx.fillRect(fbar.x, fbar.y, fbar.w, fbar.h);
@@ -1252,14 +1511,22 @@ export class MatchScene {
     ctx.font = 'bold 13px Georgia, serif';
     ctx.fillText(`${Math.round(this.power)}`, fbar.x + fbar.w + 8, fbar.y + 11);
     ctx.font = '15px Georgia, serif';
+    if (!compact) {
+      ctx.fillStyle = PALETTE.cream;
+      ctx.font = '15px Georgia, serif';
+      ctx.fillText('Forca (clique/arraste)', 130, y + 54);
+    }
 
     // Combustivel
-    ctx.fillStyle = PALETTE.cream;
-    ctx.fillText('Passos', 130, y + 82);
+    const fuelBar = this.fuelBarRect();
+    if (!compact) {
+      ctx.fillStyle = PALETTE.cream;
+      ctx.fillText('Passos', 130, y + 82);
+    }
     ctx.fillStyle = 'rgba(244,228,193,0.25)';
-    ctx.fillRect(195, y + 72, 190, 12);
+    ctx.fillRect(fuelBar.x, fuelBar.y, fuelBar.w, fuelBar.h);
     ctx.fillStyle = PALETTE.bottle;
-    ctx.fillRect(195, y + 72, (190 * this.fuel) / JORBE_FUEL_PER_ROUND, 12);
+    ctx.fillRect(fuelBar.x, fuelBar.y, (fuelBar.w * this.fuel) / JORBE_FUEL_PER_ROUND, fuelBar.h);
 
     // Armas — cartas com icone desenhado, clicaveis, nao so texto.
     WEAPONS.forEach((w, i) => {
@@ -1267,6 +1534,7 @@ export class MatchScene {
       const selected = i === this.weaponIdx;
       const ammo = this.ammo[w.id];
       const out = ammo !== null && ammo !== undefined && ammo <= 0;
+      const narrow = card.w < 130;
 
       ctx.fillStyle = selected ? PALETTE.crust : 'rgba(244,228,193,0.12)';
       ctx.beginPath();
@@ -1276,26 +1544,49 @@ export class MatchScene {
       ctx.lineWidth = 2;
       ctx.stroke();
 
-      drawWeaponIcon(ctx, w.id, card.x + 24, card.y + 31, 30, out ? 'rgba(217,164,65,0.3)' : w.color);
+      const iconColor = out ? 'rgba(217,164,65,0.3)' : w.color;
+      const textColor = selected ? INK : out ? 'rgba(244,228,193,0.35)' : PALETTE.cream;
+      const ammoLabel = ammo === null || ammo === undefined ? 'infinita' : `${ammo}`;
 
-      ctx.fillStyle = selected ? INK : out ? 'rgba(244,228,193,0.35)' : PALETTE.cream;
-      ctx.font = 'bold 14px Georgia, serif';
-      ctx.fillText(`${i + 1}. ${w.name}`, card.x + 48, card.y + 24);
-      ctx.font = '13px Georgia, serif';
-      ctx.fillText(ammo === null || ammo === undefined ? 'infinita' : `${ammo} restantes`, card.x + 48, card.y + 44);
+      if (narrow) {
+        drawWeaponIcon(ctx, w.id, card.x + card.w / 2, card.y + 20, 22, iconColor);
+        ctx.textAlign = 'center';
+        ctx.fillStyle = textColor;
+        ctx.font = 'bold 12px Georgia, serif';
+        ctx.fillText(`${i + 1}`, card.x + card.w / 2, card.y + 44);
+        ctx.font = '11px Georgia, serif';
+        ctx.fillText(ammoLabel, card.x + card.w / 2, card.y + 57);
+        ctx.textAlign = 'left';
+      } else {
+        drawWeaponIcon(ctx, w.id, card.x + 24, card.y + 31, 30, iconColor);
+        ctx.fillStyle = textColor;
+        ctx.font = 'bold 14px Georgia, serif';
+        ctx.fillText(`${i + 1}. ${w.name}`, card.x + 48, card.y + 24);
+        ctx.font = '13px Georgia, serif';
+        ctx.fillText(ammo === null || ammo === undefined ? 'infinita' : `${ammo} restantes`, card.x + 48, card.y + 44);
+      }
     });
-    const wx = this.weaponCardRect(WEAPONS.length - 1).x + this.weaponCardRect(WEAPONS.length - 1).w;
 
     // Estado
-    ctx.font = '15px Georgia, serif';
-    ctx.fillStyle = PALETTE.crust;
     let status = '';
     if (this.phase === 'prep') {
       status = this.aimLocked ? 'Tiro travado. Aguardando os outros...' : 'A/D anda · SEGURE ESPACO';
     } else if (this.phase === 'resolve') status = 'Resolvendo a rodada...';
     else if (this.phase === 'interval') status = 'Fim da rodada';
     if (self && !self.alive) status = 'Voce foi eliminado — assistindo';
-    ctx.fillText(status, wx + 10, y + 40);
+
+    if (!compact) {
+      const wx = this.weaponCardRect(WEAPONS.length - 1).x + this.weaponCardRect(WEAPONS.length - 1).w;
+      ctx.font = '15px Georgia, serif';
+      ctx.fillStyle = PALETTE.crust;
+      ctx.fillText(status, wx + 10, y + 40);
+    } else {
+      ctx.font = '13px Georgia, serif';
+      ctx.fillStyle = PALETTE.crust;
+      ctx.textAlign = 'center';
+      ctx.fillText(status, this.cam.viewW / 2, y + 204);
+      ctx.textAlign = 'left';
+    }
 
     this.drawAimDragLine(ctx);
 

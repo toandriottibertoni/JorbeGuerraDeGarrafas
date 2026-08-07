@@ -362,7 +362,7 @@ button.ghost:active:not(:disabled) {
 #readyBtn {
   position: fixed;
   left: 50%;
-  bottom: 116px;
+  bottom: calc(var(--hud-h, 124px) + 8px);
   transform: translateX(-50%);
   z-index: 55;
   background: rgba(19, 8, 2, 0.85);
@@ -393,4 +393,70 @@ button.ghost:active:not(:disabled) {
   font-family: Georgia, serif;
   pointer-events: none;
   user-select: none;
+}
+
+/* ------------------------------------------------------------------ */
+/* Chat da partida — recolhido por padrao, cresce pra cima do botao   */
+/* ------------------------------------------------------------------ */
+
+#matchChat {
+  position: fixed;
+  right: 16px;
+  bottom: calc(var(--hud-h, 124px) + 8px);
+  z-index: 55;
+  display: flex;
+  flex-direction: column-reverse;
+  align-items: flex-end;
+  gap: 8px;
+}
+
+#matchChatToggle {
+  background: rgba(19, 8, 2, 0.85);
+  font-size: 0.85rem;
+  padding: 8px 14px;
+}
+
+#matchChatPanel {
+  display: none;
+  flex-direction: column;
+  gap: 6px;
+  width: 260px;
+  max-width: calc(100vw - 32px);
+  background: rgba(19, 8, 2, 0.92);
+  border: 2px solid var(--crust);
+  border-radius: 4px;
+  padding: 8px;
+  animation: panel-in 180ms cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+#matchChat.open #matchChatPanel {
+  display: flex;
+}
+
+#matchChatLog {
+  max-height: 160px;
+  overflow-y: auto;
+  font-size: 0.78rem;
+  line-height: 1.5;
+  color: var(--cream);
+}
+
+#matchChatLog b {
+  color: var(--crust);
+}
+
+#matchChatRow {
+  display: flex;
+  gap: 6px;
+}
+
+#matchChatInput {
+  flex: 1 1 auto;
+  padding: 6px 8px;
+  font-size: 0.85rem;
+}
+
+#matchChatSend {
+  padding: 6px 10px;
+  font-size: 0.85rem;
 }

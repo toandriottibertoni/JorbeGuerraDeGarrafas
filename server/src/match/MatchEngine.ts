@@ -21,6 +21,7 @@ import {
   Terrain,
   WEAPONS,
   WIND_MAX,
+  WIND_MAX_DELTA,
   getWeapon,
   pickSpawns,
   prepSecondsFor,
@@ -316,7 +317,10 @@ export class MatchEngine {
 
     const alive = this.alivePlayers();
     this.phaseDurationMs = prepSecondsFor(alive.length) * 1000;
-    this.wind = this.rng.range(-WIND_MAX, WIND_MAX);
+    // Passeio suave a partir do vento anterior — muda pouco a cada rodada em
+    // vez de sortear do zero, que dava trocas bruscas e imprevisiveis.
+    const delta = this.rng.range(-WIND_MAX_DELTA, WIND_MAX_DELTA);
+    this.wind = Math.max(-WIND_MAX, Math.min(WIND_MAX, this.wind + delta));
 
     for (const p of this.players.values()) {
       p.aim = null;

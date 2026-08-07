@@ -366,6 +366,8 @@ export interface JorbeDrawState {
   aimAngle: number | null;
   /** 0..1 — estica o braco da mira, feedback visual da forca escolhida. */
   aimPower: number;
+  /** Texto do balaozinho de angulo/forca acima da cabeca — null esconde. */
+  aimLabel: string | null;
   anim: JorbeAnim;
 }
 
@@ -511,6 +513,42 @@ export function drawJorbe(ctx: CanvasRenderingContext2D, s: JorbeDrawState): voi
   ctx.fillStyle = s.isSelf ? PALETTE.crust : PALETTE.cream;
   ctx.fillText(s.nick, cx, barY - 4);
   ctx.textAlign = 'left';
+
+  // Balaozinho com angulo/forca — pra mirar sem precisar olhar pro canto da tela.
+  if (s.aimLabel) {
+    ctx.save();
+    ctx.font = 'bold 12px Georgia, serif';
+    const textW = ctx.measureText(s.aimLabel).width;
+    const bw = textW + 14;
+    const bh = 18;
+    const nickY = barY - 4;
+    const gap = 6;
+    const tail = 6;
+    const by = nickY - gap - tail - bh;
+    const bx = cx - bw / 2;
+
+    ctx.fillStyle = 'rgba(19,8,2,0.82)';
+    ctx.strokeStyle = PALETTE.crust;
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.roundRect(bx, by, bw, bh, 6);
+    ctx.fill();
+    ctx.stroke();
+
+    ctx.beginPath();
+    ctx.moveTo(cx - 5, by + bh - 1);
+    ctx.lineTo(cx, by + bh + tail);
+    ctx.lineTo(cx + 5, by + bh - 1);
+    ctx.closePath();
+    ctx.fillStyle = 'rgba(19,8,2,0.82)';
+    ctx.fill();
+
+    ctx.textAlign = 'center';
+    ctx.fillStyle = PALETTE.cream;
+    ctx.fillText(s.aimLabel, cx, by + bh - 5.5);
+    ctx.textAlign = 'left';
+    ctx.restore();
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -822,6 +860,50 @@ export class Shockwaves {
 }
 
 // ---------------------------------------------------------------------------
+// Numeros de dano flutuantes
+// ---------------------------------------------------------------------------
+
+interface FloatText {
+  x: number;
+  y: number;
+  text: string;
+  color: string;
+  t: number;
+  maxT: number;
+}
+
+/** Numeros de dano que sobem e somem — feedback imediato de quanto rolou no impacto. */
+export class FloatingTexts {
+  private items: FloatText[] = [];
+
+  spawn(x: number, y: number, text: string, color: string): void {
+    this.items.push({ x, y, text, color, t: 0, maxT: 1.1 });
+  }
+
+  update(dt: number): void {
+    for (const f of this.items) f.t += dt;
+    this.items = this.items.filter((f) => f.t < f.maxT);
+  }
+
+  draw(ctx: CanvasRenderingContext2D): void {
+    for (const f of this.items) {
+      const p = f.t / f.maxT;
+      const rise = easeOutCubic(p) * 34;
+      ctx.save();
+      ctx.globalAlpha = p < 0.75 ? 1 : 1 - (p - 0.75) / 0.25;
+      ctx.font = 'bold 18px Georgia, serif';
+      ctx.textAlign = 'center';
+      ctx.strokeStyle = INK;
+      ctx.lineWidth = 3;
+      ctx.strokeText(f.text, f.x, f.y - rise);
+      ctx.fillStyle = f.color;
+      ctx.fillText(f.text, f.x, f.y - rise);
+      ctx.restore();
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Minimapa
 // ---------------------------------------------------------------------------
 
@@ -831,7 +913,7 @@ export function drawMinimap(
   cam: Camera,
   players: { x: number; y: number; alive: boolean; isSelf: boolean }[],
 ): { x: number; y: number; w: number; h: number } {
-  const w = 240;
+  const w = Math.max(120, Math.min(240, cam.viewW * 0.28));
   const h = (w * MAP_HEIGHT) / MAP_WIDTH;
   const x = cam.viewW - w - 16;
   const y = 16;
