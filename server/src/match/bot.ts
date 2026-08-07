@@ -50,9 +50,15 @@ export function solveBotShot(
   };
 }
 
-/** Escolhe uma arma entre as que ainda tem municao, com peso pra tampinha (infinita). */
+/**
+ * Escolhe uma arma entre as que ainda tem municao, com peso pra tampinha
+ * (infinita). Armas defensivas (escudo) ficam de fora — o bot nunca defende
+ * sozinho, so ataca; decidir quando vale a pena se defender e uma IA a parte
+ * que nao existe ainda.
+ */
 export function pickBotWeapon(ammo: Record<string, number | null>, rng: Rng): Weapon {
   const usable = WEAPONS.filter((w) => {
+    if (w.defensive) return false;
     const a = ammo[w.id];
     return a === null || a === undefined || a > 0;
   });

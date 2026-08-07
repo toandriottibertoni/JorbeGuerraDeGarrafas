@@ -1,5 +1,5 @@
 import { noise1, noise2, Rng } from './rng.js';
-import { MAP_HEIGHT, MAP_WIDTH } from './constants.js';
+import { JORBE_WIDTH, MAP_HEIGHT, MAP_WIDTH } from './constants.js';
 
 /** Material de cada pixel do mapa. */
 export const Mat = {
@@ -37,10 +37,13 @@ export interface MapDef {
   caves: number;
 }
 
+// `relief` e em pixels absolutos — escalado junto com o corte de MAP_HEIGHT
+// pra 60% (era 190/110/260), senao o relevo ficaria proporcionalmente bem
+// mais dramatico no mapa menor.
 export const MAPS: readonly MapDef[] = [
-  { id: 'fabrica', name: 'Fabrica', groundLevel: 0.62, relief: 190, caves: 0.5 },
-  { id: 'praia', name: 'Praia', groundLevel: 0.7, relief: 110, caves: 0.2 },
-  { id: 'deposito', name: 'Deposito', groundLevel: 0.55, relief: 260, caves: 0.75 },
+  { id: 'fabrica', name: 'Fabrica', groundLevel: 0.62, relief: 114, caves: 0.5 },
+  { id: 'praia', name: 'Praia', groundLevel: 0.7, relief: 66, caves: 0.2 },
+  { id: 'deposito', name: 'Deposito', groundLevel: 0.55, relief: 156, caves: 0.75 },
 ];
 
 export function getMap(id: string): MapDef {
@@ -171,6 +174,29 @@ export class Terrain {
 }
 
 /**
+ * Altura do chao considerando a LARGURA inteira do Jorbe, nao so uma coluna.
+ * `groundBelow` de coluna unica bastava num terreno chapado, mas numa ladeira
+ * o ponto mais alto (menor y) dentro da largura do corpo pode ficar bem acima
+ * do que a coluna central sozinha acusaria — resultado: o corpo inteiro nasce
+ * sobrepondo terreno solido de um lado. Usa o ponto mais restritivo (menor y)
+ * amostrado ao longo da largura, garantindo que nenhuma coluna fique embaixo
+ * da superficie.
+ */
+function groundBelowSpan(terrain: Terrain, centerX: number, width: number): number {
+  const half = Math.floor(width / 2);
+  let minY = terrain.height;
+  // Passo 1: um pico estreito de 1-2px entre amostras espacadas escaparia
+  // (a mesma armadilha de aliasing que ja pegou o boxHits) — a largura e so
+  // ~22px, entao varrer coluna a coluna e barato mesmo assim.
+  for (let dx = -half; dx <= half; dx++) {
+    const x = Math.max(0, Math.min(terrain.width - 1, centerX + dx));
+    const y = terrain.groundBelow(x, 0);
+    if (y < minY) minY = y;
+  }
+  return minY;
+}
+
+/**
  * Sorteia pontos de nascimento espalhados pelo mapa, um por jogador, sempre
  * sobre solo firme e com distancia minima entre si.
  */
@@ -185,7 +211,7 @@ export function pickSpawns(terrain: Terrain, count: number, seed: number): { x: 
     guard++;
     const x = rng.int(margin, terrain.width - margin);
     if (spawns.some((s) => Math.abs(s.x - x) < minGap)) continue;
-    const y = terrain.groundBelow(x, 0);
+    const y = groundBelowSpan(terrain, x, JORBE_WIDTH);
     // Fora do mapa ou dentro da faixa de rocha do fundo: descarta.
     if (y >= terrain.height - 30) continue;
     spawns.push({ x, y: y - 1 });
@@ -194,7 +220,7 @@ export function pickSpawns(terrain: Terrain, count: number, seed: number): { x: 
   // Se o mapa for apertado demais, relaxa a distancia minima e completa.
   let fallbackX = margin;
   while (spawns.length < count) {
-    const y = terrain.groundBelow(fallbackX, 0);
+    const y = groundBelowSpan(terrain, fallbackX, JORBE_WIDTH);
     if (y < terrain.height - 30) spawns.push({ x: fallbackX, y: y - 1 });
     fallbackX += 60;
     if (fallbackX > terrain.width - margin) break;

@@ -295,8 +295,8 @@ function renderRoom(): void {
       SEGURE ESPACO ou clique com o BOTAO DIREITO em qualquer ponto do mapa
       e arraste (estilo estilingue) pra mirar · clique na barra de forca ou
       nas cartas de arma pra ajustar direto · botao OK trava o tiro ·
-      1/2/3 troca a arma · BOTAO ESQUERDO arrasta a camera · C volta a camera
-      pro seu Jorbe.
+      1/2/3 troca a arma · BOTAO ESQUERDO arrasta a camera · RODA DO MOUSE
+      da zoom · C volta a camera pro seu Jorbe.
       ${isHost ? '' : '<br>Aguardando o dono da sala comecar.'}
     </div>
   `;

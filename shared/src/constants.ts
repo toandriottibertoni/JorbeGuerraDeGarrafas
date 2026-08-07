@@ -47,14 +47,14 @@ export function prepSecondsFor(alivePlayers: number): number {
 export const ROOM_MAX_PLAYERS = 15;
 export const ROOM_MIN_PLAYERS_TO_START = 2;
 
-/** Dimensoes do mapa, em pixels. Largo o bastante pra ter exploracao. */
-export const MAP_WIDTH = 3840;
-export const MAP_HEIGHT = 1080;
+/** Dimensoes do mapa, em pixels. 60% do tamanho original — partidas mais compactas. */
+export const MAP_WIDTH = 2304;
+export const MAP_HEIGHT = 648;
 
-/** Personagem. */
+/** Personagem. Maior que o original pra ser um alvo mais facil de acertar. */
 export const JORBE_MAX_HP = 100;
-export const JORBE_WIDTH = 22;
-export const JORBE_HEIGHT = 30;
+export const JORBE_WIDTH = 30;
+export const JORBE_HEIGHT = 40;
 /** Deslocamento maximo (px) que um Jorbe pode gastar por rodada. */
 export const JORBE_FUEL_PER_ROUND = 400;
 export const WALK_SPEED = 78;
@@ -77,8 +77,13 @@ export const FALL_DAMAGE_PER_SPEED = 0.09;
 /** Mira. */
 export const MIN_POWER = 5;
 export const MAX_POWER = 100;
-/** Velocidade inicial do projetil com forca 100. */
-export const POWER_TO_SPEED = 9.6;
+/**
+ * Velocidade inicial do projetil com forca 100. Precisa cobrir a maior
+ * distancia possivel entre dois spawns (o mapa tem MAP_WIDTH de largura) —
+ * com 9.6 o alcance maximo a 45 graus cobria so ~49% disso, deixando
+ * adversarios distantes literalmente fora de alcance de qualquer angulo.
+ */
+export const POWER_TO_SPEED = 15;
 
 /**
  * Engradados de paraquedas: caem entre rodadas, somem se ninguem pegar ate

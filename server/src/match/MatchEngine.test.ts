@@ -271,9 +271,12 @@ test('partida termina quando sobra um e o campeao fica em primeiro', () => {
   const { engine, sink } = makeMatch(2);
   engine.start();
 
-  // p1 se explode ate morrer.
+  // p1 se explode ate morrer. Bazuca (raio bem maior que a tampinha) garante
+  // dano alto no proprio pe em todo tiro reto pra cima; municao destravada
+  // pra nao esbarrar no limite de 4 cargas antes de terminar o servico.
+  poke(engine).players.get('p1').ammo.bazuca = 99;
   for (let i = 0; i < 12 && !engine.isFinished; i++) {
-    engine.applyAim('p1', { angle: 90, power: 5, weaponId: 'tampinha', fire: true });
+    engine.applyAim('p1', { angle: 90, power: 5, weaponId: 'bazuca', fire: true });
     advance(engine, 45);
   }
 
@@ -646,7 +649,7 @@ test('bot respeita municao limitada — nunca atira arma que nao tem mais', () =
 /** Plano sintetico: testar attributeStats isolado da fisica real e muito mais
  *  confiavel do que procurar uma seed que por acaso acerta um tiro em alguem. */
 function fakePlan(shots: ResolutionPlan['shots'], events: ResolutionPlan['events']): ResolutionPlan {
-  return { round: 1, wind: 0, shots, events, totalTicks: 10, finalStates: [] };
+  return { round: 1, wind: 0, shots, events, totalTicks: 10, finalStates: [], shielded: [] };
 }
 
 test('dano de explosao e creditado a quem atirou', () => {
@@ -756,4 +759,47 @@ test('matchStats e transmitido pra sala junto com cada resolucao de rodada', () 
     assert.ok(['p0', 'p1'].includes(s.playerId));
     assert.ok(typeof s.damage === 'number' && typeof s.kills === 'number');
   }
+});
+
+// ---------------------------------------------------------------------------
+// Escudo — arma defensiva
+// ---------------------------------------------------------------------------
+
+test('ativar o escudo nao cria tiro nenhum e entra na lista de escudados', () => {
+  const { engine, sink } = makeMatch(2);
+  engine.start();
+
+  engine.applyAim('p0', { angle: 45, power: 50, weaponId: 'escudo', fire: true });
+  engine.applyAim('p1', { angle: 45, power: 50, weaponId: 'tampinha', fire: true });
+  advance(engine, EARLY_RESOLVE_GRACE_MS / 1000 + 0.3);
+
+  const plan = (sink.eventsOf('roundResolve') as ResolutionPlan[])[0];
+  assert.ok(plan, 'rodada deveria ter resolvido');
+  assert.equal(
+    plan.shots.some((s) => s.ownerId === 'p0'),
+    false,
+    'ativar escudo nao pode gerar projetil',
+  );
+  assert.equal(plan.shots.length, 1, 'so o tiro do p1 deveria existir');
+  assert.deepEqual(plan.shielded, ['p0']);
+  assert.equal(poke(engine).players.get('p0').char.shielded, true);
+});
+
+test('escudo gasta uma carga por ativacao e reseta a cada rodada nova', () => {
+  const { engine } = makeMatch(2);
+  engine.start();
+
+  const p0 = poke(engine).players.get('p0');
+  assert.equal(p0.ammo.escudo, 3, 'comeca com 3 cargas');
+
+  engine.applyAim('p0', { angle: 45, power: 50, weaponId: 'escudo', fire: true });
+  engine.applyAim('p1', { angle: 45, power: 50, weaponId: 'tampinha', fire: true });
+  advance(engine, EARLY_RESOLVE_GRACE_MS / 1000 + 0.3);
+
+  assert.equal(p0.ammo.escudo, 2, 'ativar consome uma carga');
+  assert.equal(p0.char.shielded, true, 'protegido ate a proxima rodada comecar');
+
+  // Fim do intervalo, proxima rodada comeca — precisa ativar de novo.
+  advance(engine, 10);
+  assert.equal(p0.char.shielded, false, 'escudo nao protege sozinho pra sempre, so a rodada em que ativou');
 });

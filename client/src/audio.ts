@@ -156,6 +156,17 @@ export function sfxHit(): void {
   tone({ freqFrom: 500, freqTo: 200, duration: 0.15, type: 'sine', gain: 0.12 });
 }
 
+/** Clang metalico curto — escudo bloqueia uma explosao. */
+export function sfxShieldBlock(): void {
+  tone({ freqFrom: 1200, freqTo: 700, duration: 0.12, type: 'square', gain: 0.16 });
+  burst(0.08, { highpass: 2000, gain: 0.12, delay: 0.01 });
+}
+
+/** Zumbido curto subindo — escudo ativado. */
+export function sfxShieldUp(): void {
+  tone({ freqFrom: 300, freqTo: 700, duration: 0.18, type: 'sine', gain: 0.14 });
+}
+
 /** Vidro quebrando + "blub" — morte. */
 export function sfxDeath(): void {
   burst(0.25, { highpass: 1500, gain: 0.2 });

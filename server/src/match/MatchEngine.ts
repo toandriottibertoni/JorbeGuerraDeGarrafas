@@ -175,6 +175,7 @@ export class MatchEngine {
           hp: JORBE_MAX_HP,
           alive: true,
           fuel: JORBE_FUEL_PER_ROUND,
+          shielded: false,
         },
       });
       this.order.push(s.id);
@@ -326,6 +327,8 @@ export class MatchEngine {
       p.aim = null;
       p.input = { ...NO_INPUT };
       p.char.fuel = JORBE_FUEL_PER_ROUND;
+      // Escudo so protege a rodada em que foi ativado — precisa ativar de novo.
+      p.char.shielded = false;
     }
 
     this.planBotsForRound();
@@ -568,6 +571,7 @@ export class MatchEngine {
     const chars = this.order.map((id) => this.players.get(id)!.char);
     const shots: ShotInit[] = [];
     const projectiles: Projectile[] = [];
+    const shielded: string[] = [];
 
     // Ordem estavel: dois servidores com a mesma entrada produzem o mesmo plano.
     for (const id of this.order) {
@@ -578,6 +582,14 @@ export class MatchEngine {
       const ammo = p.ammo[aim.weaponId];
       if (ammo !== null && ammo !== undefined && ammo <= 0) continue;
       if (ammo !== null && ammo !== undefined) p.ammo[aim.weaponId] = ammo - 1;
+
+      // Escudo e defensivo: nao cria projetil nenhum, so marca o personagem
+      // como protegido contra qualquer explosao que acertar nesta rodada.
+      if (getWeapon(aim.weaponId).defensive) {
+        p.char.shielded = true;
+        shielded.push(p.id);
+        continue;
+      }
 
       const speed = aim.power * POWER_TO_SPEED;
       // Unico ponto do jogo que usa cos/sin: o resultado ja viaja pronto no
@@ -645,6 +657,7 @@ export class MatchEngine {
         hp: c.hp,
         alive: c.alive,
       })),
+      shielded,
     };
   }
 

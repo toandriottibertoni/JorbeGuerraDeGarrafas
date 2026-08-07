@@ -126,6 +126,8 @@ export interface ResolutionPlan {
   events: SimEvent[];
   totalTicks: number;
   finalStates: PlayerSnapshot[];
+  /** Quem ativou o escudo nesta rodada — pro cliente desenhar a aura enquanto ela durar. */
+  shielded: string[];
 }
 
 export interface RoundEnd {

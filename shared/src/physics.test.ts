@@ -25,6 +25,7 @@ function makeChar(id: string, x: number, y: number): CharState {
     hp: JORBE_MAX_HP,
     alive: true,
     fuel: JORBE_FUEL_PER_ROUND,
+    shielded: false,
   };
 }
 
@@ -159,6 +160,33 @@ test('explosao empurra o alvo para longe do centro', () => {
 
   assert.ok(c.vx > 0, `alvo a direita do estouro deveria ser empurrado pra direita, vx=${c.vx}`);
   assert.equal(c.onGround, false, 'explosao tira o Jorbe do chao');
+});
+
+test('escudo bloqueia dano e empurrao da explosao por inteiro', () => {
+  const t = Terrain.generate('praia', 5);
+  const c = makeChar('a', 1030, 500);
+  c.shielded = true;
+  const p: Projectile = {
+    id: 1,
+    ownerId: 'x',
+    weaponId: 'bazuca',
+    x: 1000,
+    y: 500 - 15,
+    vx: 0,
+    vy: 0,
+    age: 0,
+    dead: false,
+  };
+
+  const ev: SimEvent[] = [];
+  explode(t, p, [c], 0, ev);
+
+  assert.equal(c.hp, JORBE_MAX_HP, 'escudo bloqueia todo o dano');
+  assert.equal(c.vx, 0, 'escudo tambem bloqueia o empurrao');
+  assert.equal(c.vy, 0);
+  assert.equal(c.onGround, true, 'nem tira do chao');
+  assert.ok(ev.some((e) => e.kind === 'blocked' && e.playerId === 'a'), 'precisa avisar que bloqueou');
+  assert.ok(!ev.some((e) => e.kind === 'damage' || e.kind === 'knockback'), 'nao pode gerar dano nem empurrao');
 });
 
 test('explosao fora do raio nao encosta em ninguem', () => {

@@ -8,6 +8,7 @@ import {
   MAX_POWER,
   MIN_POWER,
   NO_INPUT,
+  POWER_TO_SPEED,
   PREP_DT,
   TICK_DT,
   Terrain,
@@ -42,6 +43,7 @@ import {
   drawFilmOverlay,
   drawJorbe,
   drawMinimap,
+  drawShieldAura,
   drawSky,
   drawWeaponIcon,
   drawWindIndicator,
@@ -139,7 +141,8 @@ const WEAPON_WEIGHT: Record<string, 'light' | 'medium' | 'heavy'> = {
  */
 export class MatchScene {
   /** Abaixo disso a HUD nao cabe numa linha so — empilha em varias. */
-  private static readonly HUD_COMPACT_BREAKPOINT = 860;
+  /** 4 cartas de arma (156px + espaco) num layout de linha unica precisam de mais largura que 3. */
+  private static readonly HUD_COMPACT_BREAKPOINT = 1100;
   private static readonly FIRED_BEFORE_KEY = 'jorbe_fired_before';
 
   /** localStorage pode estar bloqueado (modo privado, iframe restrito) — nesse caso so mostra o tutorial sempre. */
@@ -214,11 +217,14 @@ export class MatchScene {
   private lastShotTrail: { x: number; y: number }[] | null = null;
   /** So true ate o jogador atirar pela primeira vez neste navegador — ensina a atirar. */
   private showFireTutorial = MatchScene.readNeverFired();
+  /** Quem ativou o escudo nesta rodada — desenha a aura ate a proxima rodada comecar. */
+  private shielded = new Set<string>();
 
   private playback: Playback | null = null;
   private playAcc = 0;
 
-  private camFollowSelf = true;
+  /** Jogador arrastou a camera manualmente — nenhum auto-follow (tiro ou proprio Jorbe) reassume ate soltar (C) ou nova rodada. */
+  private cameraManualHold = false;
   private dragging = false;
   private lastPointer: { x: number; y: number } | null = null;
   private forceDragging = false;
@@ -426,6 +432,7 @@ export class MatchScene {
         hp: p.hp,
         alive: true,
         fuel: JORBE_FUEL_PER_ROUND,
+        shielded: false,
         rig: freshRig(p.hp, p.id),
       });
     }
@@ -462,7 +469,8 @@ export class MatchScene {
     this.charging = false;
     this.aimLocked = false;
     this.pending = [];
-    this.camFollowSelf = true;
+    this.cameraManualHold = false;
+    this.shielded = new Set();
     this.readyIds = new Set();
     this.lastTickSecond = -1;
     this.tickPulse = 0;
@@ -561,6 +569,7 @@ export class MatchScene {
     this.phase = 'resolve';
     this.playAcc = 0;
     this.charging = false;
+    this.shielded = new Set(plan.shielded);
 
     const projectiles = new Map<number, PlaybackProjectile>();
     for (const s of plan.shots) {
@@ -580,7 +589,6 @@ export class MatchScene {
 
     const selfShotId = plan.shots.find((s) => s.ownerId === this.ownId)?.id ?? null;
     this.playback = { plan, tick: 0, eventIdx: 0, projectiles, lastBoom: null, selfShotId, selfTrail: [] };
-    this.camFollowSelf = false;
     this.showBanner('Fogo!', 1200);
   }
 
@@ -597,6 +605,7 @@ export class MatchScene {
     // Botao direito agora e dedicado a mover a camera — sem isso o navegador
     // abriria o menu de contexto nativo a cada clique direito no jogo.
     this.canvas.addEventListener('contextmenu', this.onContextMenu);
+    this.canvas.addEventListener('wheel', this.onWheel, { passive: false });
     window.addEventListener('resize', this.onResize);
     this.onResize();
   }
@@ -608,11 +617,19 @@ export class MatchScene {
     window.removeEventListener('pointermove', this.onPointerMove);
     window.removeEventListener('pointerup', this.onPointerUp);
     this.canvas.removeEventListener('contextmenu', this.onContextMenu);
+    this.canvas.removeEventListener('wheel', this.onWheel);
     window.removeEventListener('resize', this.onResize);
   }
 
   private onContextMenu = (e: MouseEvent): void => {
     e.preventDefault();
+  };
+
+  /** Roda do mouse: aproxima ou afasta a camera, mantendo o centro da tela fixo. */
+  private onWheel = (e: WheelEvent): void => {
+    e.preventDefault();
+    const factor = e.deltaY < 0 ? 1.12 : 1 / 1.12;
+    this.cam.zoomBy(factor);
   };
 
   private onKeyDown = (e: KeyboardEvent): void => {
@@ -624,11 +641,15 @@ export class MatchScene {
     if (k === ' ') {
       e.preventDefault();
       if (this.phase === 'prep' && !this.aimLocked && this.canFire()) {
-        this.charging = true;
-        this.power = MIN_POWER;
+        // Escudo nao tem forca pra carregar — um toque ja ativa.
+        if (this.weapon.defensive) this.fire();
+        else {
+          this.charging = true;
+          this.power = MIN_POWER;
+        }
       }
     }
-    if (k === 'c') this.camFollowSelf = true;
+    if (k === 'c') this.cameraManualHold = false;
     if (k >= '1' && k <= '9') this.selectWeapon(Number(k) - 1);
   };
 
@@ -707,8 +728,8 @@ export class MatchScene {
     const self = this.players.get(this.ownId);
     if (!self || !self.alive) return null;
     return {
-      x: self.x - this.cam.renderX,
-      y: self.y - JORBE_HEIGHT * 0.55 - this.cam.renderY,
+      x: (self.x - this.cam.renderX) * this.cam.zoom,
+      y: (self.y - JORBE_HEIGHT * 0.55 - this.cam.renderY) * this.cam.zoom,
     };
   }
 
@@ -734,7 +755,7 @@ export class MatchScene {
     // Botao direito: mira em QUALQUER ponto do mapa — nao precisa acertar o
     // Jorbe, o vetor de estilingue e calculado a partir dele de qualquer jeito.
     if (e.button === 2) {
-      if (!canAdjust) return;
+      if (!canAdjust || this.weapon.defensive) return;
       const anchor = this.ownScreenAnchor();
       if (anchor) {
         this.aimDragging = true;
@@ -762,7 +783,7 @@ export class MatchScene {
     }
 
     this.dragging = true;
-    this.camFollowSelf = false;
+    this.cameraManualHold = true;
     this.lastPointer = { x: e.clientX, y: e.clientY };
   };
 
@@ -832,12 +853,18 @@ export class MatchScene {
     if (this.phase !== 'prep' || this.aimLocked || !this.canFire()) return;
     this.aimLocked = true;
     this.sendAim(true);
-    this.showBanner('Tiro travado — aguardando a rodada', 1500);
     if (this.showFireTutorial) {
       this.showFireTutorial = false;
       MatchScene.markFired();
     }
 
+    if (this.weapon.defensive) {
+      this.showBanner('Escudo ativado — protegido nesta rodada', 1500);
+      sfx.sfxShieldUp();
+      return;
+    }
+
+    this.showBanner('Tiro travado — aguardando a rodada', 1500);
     // Coice imediato no proprio Jorbe — feedback instantaneo, antes mesmo do
     // servidor confirmar. E so cosmetico, a fisica de verdade so roda na
     // resolucao.
@@ -1139,11 +1166,20 @@ export class MatchScene {
         }
         break;
       }
+      case 'blocked': {
+        const p = this.players.get(e.playerId);
+        if (p) {
+          this.floatingTexts.spawn(p.x, p.y - JORBE_HEIGHT - 10, 'BLOQUEADO!', '#6fb8d6');
+          this.particles.flash(p.x, p.y - JORBE_HEIGHT / 2, 26);
+          sfx.sfxShieldBlock();
+        }
+        break;
+      }
     }
   }
 
   private updateCamera(dt: number): void {
-    if (this.dragging) return;
+    if (this.dragging || this.cameraManualHold) return;
 
     if (this.phase === 'resolve' && this.playback) {
       // Segue o tiro mais alto ainda no ar; se todos ja estouraram, olha a
@@ -1160,10 +1196,8 @@ export class MatchScene {
       }
     }
 
-    if (this.camFollowSelf) {
-      const self = this.players.get(this.ownId);
-      if (self) this.cam.glideTo(self.x, self.y - 40, Math.min(1, dt * 6));
-    }
+    const self = this.players.get(this.ownId);
+    if (self) this.cam.glideTo(self.x, self.y - 40, Math.min(1, dt * 6));
   }
 
   // -------------------------------------------------------------------------
@@ -1181,6 +1215,7 @@ export class MatchScene {
     }
 
     ctx.save();
+    ctx.scale(this.cam.zoom, this.cam.zoom);
     ctx.translate(-Math.round(this.cam.renderX), -Math.round(this.cam.renderY));
 
     ctx.drawImage(this.terrainRenderer.canvas, 0, 0);
@@ -1196,6 +1231,23 @@ export class MatchScene {
         ctx.lineTo(this.lastShotTrail[i]!.x, this.lastShotTrail[i]!.y);
       }
       ctx.stroke();
+      ctx.restore();
+    }
+
+    const aimPreview = this.computeAimPreview();
+    if (aimPreview) {
+      ctx.save();
+      ctx.setLineDash([4, 5]);
+      ctx.strokeStyle = this.weapon.color;
+      ctx.globalAlpha = 0.65;
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(aimPreview[0]!.x, aimPreview[0]!.y);
+      for (let i = 1; i < aimPreview.length; i++) {
+        ctx.lineTo(aimPreview[i]!.x, aimPreview[i]!.y);
+      }
+      ctx.stroke();
+      ctx.globalAlpha = 1;
       ctx.restore();
     }
 
@@ -1229,6 +1281,11 @@ export class MatchScene {
         recoilY: p.rig.recoilY.value,
         hitFlash: p.rig.hitFlash,
       };
+      if (p.alive && this.shielded.has(p.id)) {
+        drawShieldAura(ctx, p.x, p.y, this.clock);
+      }
+
+      const canAim = isSelf && this.phase === 'prep' && p.alive && !this.weapon.defensive;
       drawJorbe(ctx, {
         x: p.x,
         y: p.y,
@@ -1237,12 +1294,17 @@ export class MatchScene {
         alive: p.alive,
         nick: p.nick,
         isSelf,
-        aimAngle: isSelf && this.phase === 'prep' && p.alive ? this.aimAngle : null,
+        aimAngle: canAim ? this.aimAngle : null,
         aimPower: (Math.max(MIN_POWER, this.power) - MIN_POWER) / (MAX_POWER - MIN_POWER),
-        aimLabel:
-          isSelf && this.phase === 'prep' && p.alive && !this.showFireTutorial
-            ? `${this.aimAngle.toFixed(0)}° · ${Math.round(this.power)}`
-            : null,
+        aimLabel: !this.showFireTutorial
+          ? isSelf && this.phase === 'prep' && p.alive && this.weapon.defensive
+            ? this.aimLocked
+              ? 'Escudo ativado'
+              : 'Escudo pronto'
+            : canAim
+              ? `${this.aimAngle.toFixed(0)}° · ${Math.round(this.power)}`
+              : null
+          : null,
         anim: p.alive ? anim : { ...IDLE_ANIM, hitFlash: 0 },
       });
 
@@ -1602,6 +1664,44 @@ export class MatchScene {
     }
 
     if (this.phase === 'over' && this.finalResult) this.drawResults();
+  }
+
+  /**
+   * Previsao da trajetoria do tiro atual — puramente cosmetica, roda so no
+   * cliente com trigonometria normal (sem restricao de determinismo, porque
+   * nunca vira estado de jogo real: o servidor sempre recalcula o tiro de
+   * verdade com sua propria fisica na resolucao).
+   */
+  private computeAimPreview(): { x: number; y: number }[] | null {
+    if (this.phase !== 'prep' || this.aimLocked || !this.terrain) return null;
+    if (this.weapon.defensive) return null;
+    const self = this.players.get(this.ownId);
+    if (!self || !self.alive) return null;
+
+    const w = this.weapon;
+    const rad = (this.aimAngle * Math.PI) / 180;
+    const dirX = Math.cos(rad);
+    const dirY = -Math.sin(rad);
+    const muzzle = JORBE_HEIGHT * 0.55 + 6;
+
+    let x = self.x + dirX * muzzle;
+    let y = self.y - JORBE_HEIGHT / 2 + dirY * muzzle;
+    const speed = Math.max(MIN_POWER, this.power) * POWER_TO_SPEED;
+    let vx = dirX * speed;
+    let vy = dirY * speed;
+
+    const points: { x: number; y: number }[] = [{ x, y }];
+    const dt = 1 / 30;
+    for (let i = 0; i < 240; i++) {
+      vy += GRAVITY * dt;
+      vx += this.wind * w.windFactor * dt;
+      x += vx * dt;
+      y += vy * dt;
+      points.push({ x, y });
+      if (y > MAP_HEIGHT + 80 || x < -80 || x > MAP_WIDTH + 80) break;
+      if (this.terrain.isSolid(Math.round(x), Math.round(y))) break;
+    }
+    return points.length > 1 ? points : null;
   }
 
   /** Faixa tracejada do estilingue, do Jorbe ate o ponto que o mouse esta puxando. */

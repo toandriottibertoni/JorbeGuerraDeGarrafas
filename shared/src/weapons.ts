@@ -27,6 +27,8 @@ export interface Weapon {
   color: string;
   /** Raio visual/de colisao do projetil. */
   size: number;
+  /** Arma defensiva: ao ativar nao cria projetil nenhum, so um efeito (ex: escudo). */
+  defensive?: boolean;
 }
 
 export const WEAPONS: readonly Weapon[] = [
@@ -71,6 +73,21 @@ export const WEAPONS: readonly Weapon[] = [
     fuse: 3,
     color: '#c9d6c0',
     size: 5,
+  },
+  {
+    id: 'escudo',
+    name: 'Escudo',
+    ammo: 3,
+    damage: 0,
+    radius: 0,
+    windFactor: 0,
+    knockback: 0,
+    bounces: false,
+    restitution: 0,
+    fuse: null,
+    color: '#6fb8d6',
+    size: 0,
+    defensive: true,
   },
 ];
 

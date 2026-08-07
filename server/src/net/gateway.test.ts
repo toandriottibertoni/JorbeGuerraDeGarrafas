@@ -396,7 +396,12 @@ test('mira mandada pelo socket vira tiro na resolucao da rodada', async () => {
 
     // Com 2 vivos o preparo dura 15s; damos folga pra resolucao chegar.
     const resolvePromise = waitFor<ResolutionPlan>(dono, 'roundResolve', 45000);
-    const aim = { angle: 55, power: 75, weaponId: 'bazuca', fire: true };
+    // 90 graus = reto pra cima: sem componente horizontal, cai perto de onde
+    // saiu nao importa o alcance nem onde o jogador nasceu no mapa. Um angulo
+    // fixo mirando pro lado (como era antes) podia mandar o tiro pra fora do
+    // mapa sem explodir, dependendo de onde o spawn caiu — so piorou depois
+    // que o alcance maximo aumentou pra cobrir o mapa inteiro.
+    const aim = { angle: 90, power: 50, weaponId: 'bazuca', fire: true };
     dono.emit('aim', aim);
     const resend = (): void => {
       dono.emit('aim', aim);

@@ -36,6 +36,8 @@ export interface CharState {
   hp: number;
   alive: boolean;
   fuel: number;
+  /** Ativou o escudo nesta rodada: bloqueia dano e empurrao de qualquer explosao ate a proxima rodada resetar. */
+  shielded: boolean;
 }
 
 export interface MoveInput {
@@ -83,7 +85,8 @@ export type SimEvent =
   | { kind: 'bounce'; tick: number; shotId: number; x: number; y: number; vx: number; vy: number }
   | { kind: 'knockback'; tick: number; playerId: string; vx: number; vy: number }
   | { kind: 'damage'; tick: number; playerId: string; amount: number; hp: number; cause: DamageCause }
-  | { kind: 'death'; tick: number; playerId: string; cause: DamageCause };
+  | { kind: 'death'; tick: number; playerId: string; cause: DamageCause }
+  | { kind: 'blocked'; tick: number; playerId: string };
 
 // ---------------------------------------------------------------------------
 // Colisao do personagem
@@ -97,15 +100,15 @@ export function boxHits(t: Terrain, x: number, y: number): boolean {
   const y1 = Math.round(y);
   const y0 = y1 - JORBE_HEIGHT + 1;
 
-  // Amostragem com passo 2 no interior (rapido) + linha dos pes garantida,
-  // que e a que decide pouso e por isso nao pode escapar da amostragem.
-  for (let yy = y0; yy <= y1; yy += 2) {
-    for (let xx = x0; xx <= x1; xx += 2) {
+  // Amostragem pixel a pixel: crateras que se sobrepoem deixam pontas finas
+  // de terra que uma amostragem com passo 2 podia pular, deixando o jogo
+  // assentar o Jorbe num pé de terra que a renderizacao mostra solido —
+  // ele fica "preso" visualmente dentro do chao. A caixa e pequena (22x30),
+  // entao o custo do scan completo e desprezivel.
+  for (let yy = y0; yy <= y1; yy++) {
+    for (let xx = x0; xx <= x1; xx++) {
       if (t.isSolid(xx, yy)) return true;
     }
-  }
-  for (let xx = x0; xx <= x1; xx++) {
-    if (t.isSolid(xx, y1)) return true;
   }
   return false;
 }
@@ -183,6 +186,19 @@ export function stepCharacter(
   events: SimEvent[],
 ): void {
   if (!c.alive) return;
+
+  // Rede de seguranca: se por algum motivo o corpo ja nasceu ou ficou dentro
+  // do terreno, moveX/moveY nunca vao perceber sozinhos (so validam o PROXIMO
+  // passo, nao a posicao atual) — com vx=0 o personagem ficaria preso pra
+  // sempre. Sobe ate desencravar antes de processar o resto do tick.
+  if (boxHits(t, c.x, c.y)) {
+    for (let up = 1; up <= 60; up++) {
+      if (!boxHits(t, c.x, c.y - up)) {
+        c.y -= up;
+        break;
+      }
+    }
+  }
 
   const wantDir = (input.right ? 1 : 0) - (input.left ? 1 : 0);
   if (wantDir !== 0) c.facing = wantDir > 0 ? 1 : -1;
@@ -285,6 +301,13 @@ export function explode(
     const dy = cy - p.y;
     const dist = Math.sqrt(dx * dx + dy * dy);
     if (dist > w.radius) continue;
+
+    // Escudo ativo bloqueia dano E empurrao desta explosao por inteiro — o
+    // jogador fica plantado no lugar, sem perder vida.
+    if (c.shielded) {
+      events.push({ kind: 'blocked', tick, playerId: c.id });
+      continue;
+    }
 
     const falloff = 1 - dist / w.radius;
 

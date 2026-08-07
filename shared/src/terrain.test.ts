@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { Terrain, Mat, pickSpawns } from './terrain.js';
-import { MAP_HEIGHT, MAP_WIDTH } from './constants.js';
+import { JORBE_WIDTH, MAP_HEIGHT, MAP_WIDTH } from './constants.js';
 
 test('mesma seed gera terreno identico bit a bit', () => {
   const a = Terrain.generate('fabrica', 12345);
@@ -51,7 +51,7 @@ test('rocha do fundo resiste a explosao', () => {
 test('carve marca retangulo sujo para o renderizador', () => {
   const t = Terrain.generate('fabrica', 3);
   t.consumeDirty();
-  t.carve({ x: 300, y: 800, r: 20 });
+  t.carve({ x: 300, y: Math.floor(MAP_HEIGHT * 0.74), r: 20 });
   const dirty = t.consumeDirty();
   assert.equal(dirty.length, 1);
   assert.equal(dirty[0].x0, 280);
@@ -64,10 +64,19 @@ test('spawns ficam sobre o solo, dentro do mapa e sem empilhar', () => {
   const spawns = pickSpawns(t, 15, 42);
 
   assert.equal(spawns.length, 15, 'precisa caber 15 jogadores');
+  const half = Math.floor(JORBE_WIDTH / 2);
   for (const s of spawns) {
     assert.ok(s.x > 0 && s.x < MAP_WIDTH, 'spawn dentro do mapa');
-    assert.ok(t.isSolid(s.x, s.y + 2), `deveria haver chao sob o spawn em x=${s.x}`);
-    assert.equal(t.isSolid(s.x, s.y), false, 'o proprio spawn deve estar livre');
+
+    let foundGroundNearby = false;
+    for (let dx = -half; dx <= half; dx++) {
+      const x = Math.max(0, Math.min(MAP_WIDTH - 1, s.x + dx));
+      // Corpo inteiro tem que nascer livre — nao so a coluna central — senao
+      // ladeiras deixam parte do Jorbe sobrepondo terreno solido.
+      assert.equal(t.isSolid(x, s.y), false, `corpo do spawn deveria estar livre em x=${x}`);
+      if (t.isSolid(x, s.y + 2)) foundGroundNearby = true;
+    }
+    assert.ok(foundGroundNearby, `deveria haver chao proximo sob o spawn em x=${s.x}`);
   }
 
   const sorted = [...spawns].sort((a, b) => a.x - b.x);

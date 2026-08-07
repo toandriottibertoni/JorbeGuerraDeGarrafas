@@ -70,10 +70,15 @@ export class Spring {
 // ---------------------------------------------------------------------------
 
 export class Camera {
+  /** Coordenada de mundo do canto superior esquerdo da tela — nao muda de significado com o zoom. */
   x = 0;
   y = 0;
   viewW = 0;
   viewH = 0;
+  /** 1 = normal, >1 aproxima (mira mais precisa), <1 afasta (ve mais mapa). */
+  zoom = 1;
+  private static readonly MIN_ZOOM = 0.55;
+  private static readonly MAX_ZOOM = 2.4;
 
   /** "Trauma" de screen shake — decai sozinho, quadratico pra sumir suave. */
   private trauma = 0;
@@ -83,27 +88,39 @@ export class Camera {
   setViewport(w: number, h: number): void {
     this.viewW = w;
     this.viewH = h;
+    this.clamp();
   }
 
   /** Centraliza em um ponto do mundo, sem deixar a camera sair do mapa. */
   centerOn(wx: number, wy: number): void {
-    this.x = wx - this.viewW / 2;
-    this.y = wy - this.viewH / 2;
+    this.x = wx - this.viewW / this.zoom / 2;
+    this.y = wy - this.viewH / this.zoom / 2;
     this.clamp();
   }
 
-  pan(dx: number, dy: number): void {
-    this.x += dx;
-    this.y += dy;
+  /** Recebe delta em pixels de TELA (do mouse) — converte pra mundo conforme o zoom atual. */
+  pan(dxScreen: number, dyScreen: number): void {
+    this.x += dxScreen / this.zoom;
+    this.y += dyScreen / this.zoom;
     this.clamp();
   }
 
   /** Aproxima suavemente de um alvo — usado no replay pra seguir a acao. */
   glideTo(wx: number, wy: number, factor: number): void {
-    const tx = wx - this.viewW / 2;
-    const ty = wy - this.viewH / 2;
+    const tx = wx - this.viewW / this.zoom / 2;
+    const ty = wy - this.viewH / this.zoom / 2;
     this.x += (tx - this.x) * factor;
     this.y += (ty - this.y) * factor;
+    this.clamp();
+  }
+
+  /** Multiplica o zoom mantendo fixo o ponto do mundo no centro da tela. */
+  zoomBy(factor: number): void {
+    const cx = this.x + this.viewW / this.zoom / 2;
+    const cy = this.y + this.viewH / this.zoom / 2;
+    this.zoom = Math.min(Camera.MAX_ZOOM, Math.max(Camera.MIN_ZOOM, this.zoom * factor));
+    this.x = cx - this.viewW / this.zoom / 2;
+    this.y = cy - this.viewH / this.zoom / 2;
     this.clamp();
   }
 
@@ -128,8 +145,11 @@ export class Camera {
   }
 
   private clamp(): void {
-    const maxX = Math.max(0, MAP_WIDTH - this.viewW);
-    const maxY = Math.max(0, MAP_HEIGHT - this.viewH);
+    if (this.viewW <= 0 || this.viewH <= 0) return;
+    const spanX = this.viewW / this.zoom;
+    const spanY = this.viewH / this.zoom;
+    const maxX = Math.max(0, MAP_WIDTH - spanX);
+    const maxY = Math.max(0, MAP_HEIGHT - spanY);
     this.x = Math.min(maxX, Math.max(0, this.x));
     this.y = Math.min(maxY, Math.max(0, this.y));
   }
@@ -229,16 +249,20 @@ export function drawSky(ctx: CanvasRenderingContext2D, cam: Camera): void {
   ctx.fillStyle = g;
   ctx.fillRect(0, 0, cam.viewW, cam.viewH);
 
-  // Silhueta art deco ao fundo, com parallax lento.
+  // Silhueta art deco ao fundo, com parallax lento — ancorada no CHAO do
+  // mapa, nao na borda da tela: se o mapa for mais baixo que a janela (mapas
+  // pequenos, camera bem afastada), o horizonte falso nao pode flutuar longe
+  // de onde o terreno de verdade acaba.
   const off = -cam.x * 0.25;
+  const groundScreenY = (MAP_HEIGHT - cam.renderY) * cam.zoom;
   ctx.fillStyle = 'rgba(26,10,0,0.45)';
   for (let i = 0; i < 40; i++) {
     const bx = ((i * 260 + off) % (MAP_WIDTH * 0.5)) - 200;
     const bw = 90 + ((i * 37) % 70);
     const bh = 120 + ((i * 53) % 190);
-    ctx.fillRect(bx, cam.viewH - bh, bw, bh);
+    ctx.fillRect(bx, groundScreenY - bh, bw, bh);
     // Chamine
-    ctx.fillRect(bx + bw * 0.3, cam.viewH - bh - 40 - ((i * 17) % 40), 14, 50);
+    ctx.fillRect(bx + bw * 0.3, groundScreenY - bh - 40 - ((i * 17) % 40), 14, 50);
   }
 }
 
@@ -551,6 +575,25 @@ export function drawJorbe(ctx: CanvasRenderingContext2D, s: JorbeDrawState): voi
   }
 }
 
+/** Bolha translucida ao redor de quem ativou o escudo — pulsa devagar pra ficar bem visivel. */
+export function drawShieldAura(ctx: CanvasRenderingContext2D, x: number, y: number, clock: number): void {
+  const cx = x;
+  const cy = y - JORBE_HEIGHT / 2;
+  const r = JORBE_WIDTH * 1.3 + Math.sin(clock * 3) * 2;
+
+  ctx.save();
+  ctx.globalAlpha = 0.28 + Math.sin(clock * 3) * 0.06;
+  ctx.fillStyle = '#6fb8d6';
+  ctx.beginPath();
+  ctx.arc(cx, cy, r, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.globalAlpha = 0.8;
+  ctx.strokeStyle = '#c9eaf6';
+  ctx.lineWidth = 2;
+  ctx.stroke();
+  ctx.restore();
+}
+
 // ---------------------------------------------------------------------------
 // Icones de arma — usados no HUD, desenhados em vez de texto puro
 // ---------------------------------------------------------------------------
@@ -595,6 +638,24 @@ export function drawWeaponIcon(ctx: CanvasRenderingContext2D, weaponId: string, 
     ctx.stroke();
     ctx.beginPath();
     ctx.arc(0, -size * 0.4, size * 0.12, 0, Math.PI * 2);
+    ctx.stroke();
+  } else if (weaponId === 'escudo') {
+    ctx.beginPath();
+    ctx.moveTo(0, -size * 0.44);
+    ctx.bezierCurveTo(size * 0.4, -size * 0.32, size * 0.4, -size * 0.05, size * 0.4, size * 0.05);
+    ctx.bezierCurveTo(size * 0.4, size * 0.3, size * 0.2, size * 0.42, 0, size * 0.48);
+    ctx.bezierCurveTo(-size * 0.2, size * 0.42, -size * 0.4, size * 0.3, -size * 0.4, size * 0.05);
+    ctx.bezierCurveTo(-size * 0.4, -size * 0.05, -size * 0.4, -size * 0.32, 0, -size * 0.44);
+    ctx.closePath();
+    ctx.fill();
+    ctx.stroke();
+    ctx.strokeStyle = INK;
+    ctx.lineWidth = Math.max(1, size * 0.06);
+    ctx.beginPath();
+    ctx.moveTo(0, -size * 0.24);
+    ctx.lineTo(0, size * 0.26);
+    ctx.moveTo(-size * 0.18, -size * 0.02);
+    ctx.lineTo(size * 0.18, -size * 0.02);
     ctx.stroke();
   } else {
     ctx.beginPath();
@@ -935,10 +996,10 @@ export function drawMinimap(
     ctx.fillRect(x + p.x * sx - 2, y + p.y * sy - 2, 4, 4);
   }
 
-  // Retangulo do que a camera esta vendo
+  // Retangulo do que a camera esta vendo — encolhe com o zoom.
   ctx.strokeStyle = PALETTE.cream;
   ctx.lineWidth = 1;
-  ctx.strokeRect(x + cam.x * sx, y + cam.y * sy, cam.viewW * sx, cam.viewH * sy);
+  ctx.strokeRect(x + cam.x * sx, y + cam.y * sy, (cam.viewW / cam.zoom) * sx, (cam.viewH / cam.zoom) * sy);
   ctx.restore();
 
   return { x, y, w, h };
