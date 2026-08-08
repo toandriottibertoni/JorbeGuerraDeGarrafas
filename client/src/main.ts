@@ -4,12 +4,19 @@ import { Net } from './net.js';
 import { MatchScene } from './match.js';
 import { login, logout, playGuest, register, resumeSession, type AuthUser } from './auth.js';
 import * as sfx from './audio.js';
+import * as music from './music.js';
 
 const app = document.querySelector<HTMLDivElement>('#app')!;
 app.innerHTML = `
   <canvas id="game"></canvas>
   <div id="overlay"><div class="panel" id="panel"></div></div>
   <button id="muteBtn" class="ghost" title="Ligar/desligar som">🔊</button>
+  <button id="musicMenuBtn" class="ghost" title="Volume da musica">🎵</button>
+  <div id="volumePanel" class="hidden">
+    <div class="label"><span>Musica</span><span id="musicVolumeValue"></span></div>
+    <input type="range" id="musicVolume" min="0" max="100" />
+    <button id="musicMuteToggle" class="ghost"></button>
+  </div>
   <div id="versionTag">v${__APP_VERSION__}</div>
 `;
 
@@ -17,6 +24,11 @@ const overlay = document.querySelector<HTMLDivElement>('#overlay')!;
 const panel = document.querySelector<HTMLDivElement>('#panel')!;
 const canvas = document.querySelector<HTMLCanvasElement>('#game')!;
 const muteBtn = document.querySelector<HTMLButtonElement>('#muteBtn')!;
+const musicMenuBtn = document.querySelector<HTMLButtonElement>('#musicMenuBtn')!;
+const volumePanel = document.querySelector<HTMLDivElement>('#volumePanel')!;
+const musicVolumeInput = document.querySelector<HTMLInputElement>('#musicVolume')!;
+const musicVolumeValue = document.querySelector<HTMLSpanElement>('#musicVolumeValue')!;
+const musicMuteToggle = document.querySelector<HTMLButtonElement>('#musicMuteToggle')!;
 
 const net = new Net();
 const scene = new MatchScene(canvas, net);
@@ -25,6 +37,7 @@ scene.attachControls();
 // O AudioContext so pode nascer apos um gesto real do usuario.
 const unlockOnce = (): void => {
   sfx.unlock();
+  music.resumeIfNeeded();
   window.removeEventListener('pointerdown', unlockOnce);
   window.removeEventListener('keydown', unlockOnce);
 };
@@ -35,6 +48,46 @@ muteBtn.onclick = () => {
   sfx.setMuted(!sfx.isMuted());
   muteBtn.textContent = sfx.isMuted() ? '🔇' : '🔊';
 };
+
+// ---------------------------------------------------------------------------
+// Menu de volume da musica — funciona igual na sala e na partida, por isso
+// fica fora do #overlay (nunca escondido, feito o muteBtn).
+// ---------------------------------------------------------------------------
+
+function syncVolumeUi(): void {
+  musicVolumeInput.value = String(Math.round(music.getVolume() * 100));
+  musicVolumeValue.textContent = `${Math.round(music.getVolume() * 100)}%`;
+  musicMuteToggle.textContent = music.isMusicMuted() ? '🔇 Musica desligada' : '🔊 Musica ligada';
+}
+syncVolumeUi();
+
+musicMenuBtn.onclick = () => {
+  volumePanel.classList.toggle('hidden');
+};
+document.addEventListener('pointerdown', (e) => {
+  const target = e.target as Node;
+  if (volumePanel.classList.contains('hidden')) return;
+  if (volumePanel.contains(target) || musicMenuBtn.contains(target)) return;
+  volumePanel.classList.add('hidden');
+});
+musicVolumeInput.oninput = () => {
+  music.setVolume(Number(musicVolumeInput.value) / 100);
+  syncVolumeUi();
+};
+musicMuteToggle.onclick = () => {
+  music.setMusicMuted(!music.isMusicMuted());
+  syncVolumeUi();
+};
+
+/** Toca a trilha certa pra cada zona do jogo — so troca quando a zona muda de verdade, senao reiniciaria a faixa a cada refreshUi(). */
+let currentMusicZone: 'lobby' | 'match' | null = null;
+function syncMusicZone(matchActive: boolean): void {
+  const zone: 'lobby' | 'match' = matchActive ? 'match' : 'lobby';
+  if (zone === currentMusicZone) return;
+  currentMusicZone = zone;
+  if (zone === 'match') music.startMatchMusic();
+  else music.startLobbyMusic();
+}
 
 /** Some/hover em todo botao da tela atual — dar aquele "clique" de jogo de verdade. */
 function wireButtonSfx(): void {
@@ -75,6 +128,7 @@ function refreshUi(): void {
     renderAuth();
     return;
   }
+  syncMusicZone(inMatch);
   if (inMatch) {
     showOverlay(false);
     return;

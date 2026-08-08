@@ -86,11 +86,21 @@ export const MAX_POWER = 100;
 export const POWER_TO_SPEED = 15;
 
 /**
- * Engradados de paraquedas: caem entre rodadas, somem se ninguem pegar ate
- * o fim do proximo preparo. 0 a 2 por intervalo, metade vida metade municao.
+ * "Tiro fantastico": angulo bem vertical (perto de 90, reto pra cima) e forca
+ * no talo, que ainda assim acerta um adversario de verdade. Janela apertada
+ * de proposito -- e pra ser raro e mostrar habilidade, nao sair toda hora.
  */
-export const CRATE_MIN_PER_INTERVAL = 0;
-export const CRATE_MAX_PER_INTERVAL = 2;
+export const FANTASTIC_MIN_POWER = 90;
+export const FANTASTIC_ANGLE_MIN = 75;
+export const FANTASTIC_ANGLE_MAX = 105;
+
+/**
+ * Engradados de paraquedas: caem entre rodadas, somem se ninguem pegar ate
+ * o fim do proximo preparo. 1 a 4 por intervalo (sempre cai pelo menos um),
+ * metade vida metade municao.
+ */
+export const CRATE_MIN_PER_INTERVAL = 1;
+export const CRATE_MAX_PER_INTERVAL = 4;
 export const CRATE_HEAL_AMOUNT = 30;
 export const CRATE_AMMO_REFILL = 2;
 /** Raio de coleta, em pixels, a partir do centro do Jorbe. */

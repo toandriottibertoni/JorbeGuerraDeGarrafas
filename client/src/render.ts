@@ -713,6 +713,162 @@ export function drawWeaponIcon(ctx: CanvasRenderingContext2D, weaponId: string, 
     ctx.beginPath();
     ctx.arc(0, 0, size * 0.1, 0, Math.PI * 2);
     ctx.fill();
+  } else if (weaponId === 'nuke') {
+    // Trevo de radiacao: nucleo + tres pas.
+    ctx.beginPath();
+    ctx.arc(0, 0, size * 0.14, 0, Math.PI * 2);
+    ctx.fill();
+    for (let i = 0; i < 3; i++) {
+      const a = (i / 3) * Math.PI * 2 - Math.PI / 2;
+      ctx.beginPath();
+      ctx.arc(Math.cos(a) * size * 0.05, Math.sin(a) * size * 0.05, size * 0.4, a - 0.5, a + 0.5);
+      ctx.lineTo(0, 0);
+      ctx.closePath();
+      ctx.fill();
+      ctx.stroke();
+    }
+  } else if (weaponId === 'mirv') {
+    // Ogiva principal com duas menores se soltando dos lados.
+    ctx.beginPath();
+    ctx.moveTo(0, -size * 0.42);
+    ctx.lineTo(size * 0.16, size * 0.1);
+    ctx.lineTo(-size * 0.16, size * 0.1);
+    ctx.closePath();
+    ctx.fill();
+    ctx.stroke();
+    for (const s of [-1, 1]) {
+      ctx.beginPath();
+      ctx.moveTo(s * size * 0.28, size * 0.06);
+      ctx.lineTo(s * size * 0.4, size * 0.4);
+      ctx.lineTo(s * size * 0.16, size * 0.34);
+      ctx.closePath();
+      ctx.fill();
+      ctx.stroke();
+    }
+  } else if (weaponId === 'vespas') {
+    // Corpo listrado com ferrao.
+    ctx.beginPath();
+    ctx.ellipse(0, 0, size * 0.36, size * 0.22, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+    ctx.strokeStyle = INK;
+    ctx.lineWidth = Math.max(1, size * 0.06);
+    ctx.beginPath();
+    ctx.moveTo(-size * 0.1, -size * 0.2);
+    ctx.lineTo(-size * 0.1, size * 0.2);
+    ctx.moveTo(size * 0.12, -size * 0.2);
+    ctx.lineTo(size * 0.12, size * 0.2);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(size * 0.36, 0);
+    ctx.lineTo(size * 0.5, 0);
+    ctx.stroke();
+  } else if (weaponId === 'terremoto') {
+    // Rachadura em zigue-zague.
+    ctx.strokeStyle = INK;
+    ctx.lineWidth = Math.max(1.6, size * 0.11);
+    ctx.beginPath();
+    ctx.moveTo(-size * 0.4, -size * 0.3);
+    ctx.lineTo(-size * 0.08, -size * 0.05);
+    ctx.lineTo(size * 0.14, -size * 0.25);
+    ctx.lineTo(size * 0.06, size * 0.05);
+    ctx.lineTo(size * 0.4, size * 0.35);
+    ctx.stroke();
+  } else if (weaponId === 'fuzil') {
+    // Mira telescopica: circulo com cruz saindo pras bordas.
+    ctx.beginPath();
+    ctx.arc(0, 0, size * 0.3, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(0, -size * 0.46);
+    ctx.lineTo(0, -size * 0.16);
+    ctx.moveTo(0, size * 0.16);
+    ctx.lineTo(0, size * 0.46);
+    ctx.moveTo(-size * 0.46, 0);
+    ctx.lineTo(-size * 0.16, 0);
+    ctx.moveTo(size * 0.16, 0);
+    ctx.lineTo(size * 0.46, 0);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.arc(0, 0, size * 0.06, 0, Math.PI * 2);
+    ctx.fill();
+  } else if (weaponId === 'fantasma') {
+    // Fantasminha: cabeca arredondada, base ondulada, olhos vazados.
+    ctx.beginPath();
+    ctx.arc(0, -size * 0.05, size * 0.36, Math.PI, 0);
+    ctx.lineTo(size * 0.36, size * 0.3);
+    for (let i = 0; i < 3; i++) {
+      const x0 = size * 0.36 - (i * 2 + 1) * (size * 0.24);
+      ctx.quadraticCurveTo(x0 + size * 0.12, size * 0.44, x0, size * 0.3);
+    }
+    ctx.closePath();
+    ctx.fill();
+    ctx.stroke();
+    ctx.fillStyle = INK;
+    ctx.beginPath();
+    ctx.arc(-size * 0.13, -size * 0.08, size * 0.06, 0, Math.PI * 2);
+    ctx.arc(size * 0.13, -size * 0.08, size * 0.06, 0, Math.PI * 2);
+    ctx.fill();
+  } else if (weaponId === 'broca') {
+    // Cone rosqueado.
+    ctx.beginPath();
+    ctx.moveTo(0, -size * 0.46);
+    ctx.lineTo(size * 0.26, size * 0.4);
+    ctx.lineTo(-size * 0.26, size * 0.4);
+    ctx.closePath();
+    ctx.fill();
+    ctx.stroke();
+    ctx.strokeStyle = INK;
+    ctx.lineWidth = Math.max(1, size * 0.05);
+    for (let i = 1; i <= 3; i++) {
+      const y = -size * 0.46 + i * size * 0.22;
+      const w = (i / 3.6) * size * 0.5;
+      ctx.beginPath();
+      ctx.moveTo(-w, y);
+      ctx.lineTo(w, y);
+      ctx.stroke();
+    }
+  } else if (weaponId === 'martelo') {
+    // Marreta: cabo + cabeca retangular.
+    ctx.rotate(-0.6);
+    ctx.beginPath();
+    ctx.roundRect(-size * 0.06, -size * 0.1, size * 0.12, size * 0.56, size * 0.05);
+    ctx.fill();
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.roundRect(-size * 0.32, -size * 0.42, size * 0.64, size * 0.3, size * 0.06);
+    ctx.fill();
+    ctx.stroke();
+  } else if (weaponId === 'flor') {
+    // Cinco petalas ao redor de um miolo.
+    for (let i = 0; i < 5; i++) {
+      const a = (i / 5) * Math.PI * 2;
+      ctx.beginPath();
+      ctx.ellipse(Math.cos(a) * size * 0.22, Math.sin(a) * size * 0.22, size * 0.2, size * 0.12, a, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+    }
+    ctx.fillStyle = INK;
+    ctx.beginPath();
+    ctx.arc(0, 0, size * 0.1, 0, Math.PI * 2);
+    ctx.fill();
+  } else if (weaponId === 'vulcao') {
+    // Montanha com explosao saindo da cratera.
+    ctx.beginPath();
+    ctx.moveTo(-size * 0.42, size * 0.32);
+    ctx.lineTo(-size * 0.1, -size * 0.3);
+    ctx.lineTo(size * 0.1, -size * 0.3);
+    ctx.lineTo(size * 0.42, size * 0.32);
+    ctx.closePath();
+    ctx.fill();
+    ctx.stroke();
+    ctx.fillStyle = INK;
+    for (let i = 0; i < 3; i++) {
+      const a = -Math.PI / 2 + (i - 1) * 0.5;
+      ctx.beginPath();
+      ctx.arc(Math.cos(a) * size * 0.18, -size * 0.3 + Math.sin(a) * size * 0.18, size * 0.06, 0, Math.PI * 2);
+      ctx.fill();
+    }
   } else {
     ctx.beginPath();
     ctx.arc(0, 0, size * 0.4, 0, Math.PI * 2);

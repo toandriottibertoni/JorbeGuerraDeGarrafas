@@ -1,4 +1,5 @@
 import {
+  CRATE_WIDTH,
   GRAVITY,
   JORBE_FUEL_PER_ROUND,
   JORBE_HEIGHT,
@@ -50,6 +51,7 @@ import {
   type JorbeAnim,
 } from './render.js';
 import * as sfx from './audio.js';
+import * as music from './music.js';
 import type { Net } from './net.js';
 
 interface AnimRig {
@@ -189,6 +191,8 @@ export class MatchScene {
   private weaponIdx = 0;
   /** Escudo e um toggle independente da arma selecionada — pode atirar normal e ainda ficar protegido. */
   private shieldArmed = false;
+  /** Carta de arma sob o mouse agora — mostra nome/descricao dela na barra de info em vez da selecionada. */
+  private hoveredWeaponIdx: number | null = null;
 
   private keys = new Set<string>();
   private inputSeq = 0;
@@ -238,6 +242,9 @@ export class MatchScene {
 
   private banner = '';
   private bannerUntil = 0;
+  /** "Tiro fantastico" — banner enorme e proprio, maior peso que o banner normal. */
+  private fantasticText = '';
+  private fantasticUntil = 0;
   private finalResult: MatchEnd | null = null;
   private lastFrame = 0;
   private clock = 0;
@@ -458,6 +465,9 @@ export class MatchScene {
   }
 
   private onRoundPrep(data: RoundPrep): void {
+    // Jingle de "comecou!" — so no primeiro turno da partida.
+    if (data.round === 1) music.playReady();
+
     // Toca ANTES de sobrescrever o vento antigo — e a mudanca que interessa.
     if (Math.abs(data.wind - this.wind) > 0.5) sfx.sfxWindChange(data.wind);
 
@@ -681,9 +691,13 @@ export class MatchScene {
     return this.cam.viewW < MatchScene.HUD_COMPACT_BREAKPOINT;
   }
 
-  /** Altura do painel inferior do HUD — cresce no modo empilhado pra caber as linhas extras. */
+  /**
+   * Altura do painel inferior do HUD — cresce no modo empilhado pra caber as
+   * linhas extras, e nos dois modos reserva espaco pra barra de nome +
+   * descricao da arma (ver `drawWeaponInfoBar`), que nunca corta texto.
+   */
   private get hudH(): number {
-    return this.compactHud ? 232 : 124;
+    return this.compactHud ? 262 : 124;
   }
 
   /** Y do topo do painel inferior do HUD — usado tanto pra desenhar quanto pra testar clique. */
@@ -839,6 +853,7 @@ export class MatchScene {
   };
 
   private onPointerMove = (e: PointerEvent): void => {
+    this.updateWeaponHover(e.clientX, e.clientY);
     if (this.forceDragging) {
       this.setPowerFromClientX(e.clientX);
       return;
@@ -852,6 +867,18 @@ export class MatchScene {
     this.cam.pan(this.lastPointer.x - e.clientX, this.lastPointer.y - e.clientY);
     this.lastPointer = { x: e.clientX, y: e.clientY };
   };
+
+  /** Qual carta de arma o mouse esta sobrevoando agora — usado pra mostrar o nome/descricao dela na barra de info. */
+  private updateWeaponHover(clientX: number, clientY: number): void {
+    const visible = this.visibleWeapons;
+    for (let i = 0; i < visible.length; i++) {
+      if (this.inRect(clientX, clientY, this.weaponCardRect(i))) {
+        this.hoveredWeaponIdx = visible[i]!.idx;
+        return;
+      }
+    }
+    this.hoveredWeaponIdx = null;
+  }
 
   private onPointerUp = (): void => {
     // Soltar o mouse depois de mirar arrastando ja trava o tiro — nao precisa
@@ -983,10 +1010,18 @@ export class MatchScene {
     if (this.phase === 'prep') this.updatePrep(dtMs);
     else if (this.phase === 'resolve') this.updatePlayback(dtMs);
 
+    // Durante a resolucao quem manda na posicao e a reproducao deterministica
+    // (stepCharacter no updatePlayback), nao o alvo do servidor: o servidor so
+    // manda snapshot na fase de preparo, entao targetX/targetY ficam congelados
+    // na posicao PRE-RODADA a resolucao inteira. Interpolar pra la ali arrastava
+    // o Jorbe de volta pro lugar antigo — e sem checar colisao, o que encravava
+    // ele no terreno e ainda impedia que caisse num buraco recem-aberto.
+    const playbackOwnsPositions = this.playback !== null;
+
     for (const p of this.players.values()) {
       this.updateRig(p, dt);
       // Interpola os outros jogadores em direcao ao alvo do servidor.
-      if (p.id !== this.ownId) {
+      if (p.id !== this.ownId && !playbackOwnsPositions) {
         p.x += (p.targetX - p.x) * Math.min(1, dt * 12);
         p.y += (p.targetY - p.y) * Math.min(1, dt * 12);
       }
@@ -1163,9 +1198,24 @@ export class MatchScene {
         p.alive = fs.alive;
       }
       if (pb.selfTrail.length > 1) this.lastShotTrail = pb.selfTrail;
+      // "No final do turno": so agora, com a rodada inteira ja reproduzida
+      // pra todo mundo, e que o banner de tiro fantastico aparece — nao no
+      // instante em que o plano chega (bem antes do tiro visualmente cair).
+      if (pb.plan.fantasticShots.length > 0) {
+        const nicks = pb.plan.fantasticShots.map((f) => this.players.get(f.playerId)?.nick ?? '???').join(' e ');
+        this.triggerFantasticShot(nicks);
+      }
       this.playback = null;
       this.phase = 'interval';
     }
+  }
+
+  /** Dispara o banner enorme + som de "tiro fantastico" pra sala inteira ver. */
+  private triggerFantasticShot(nicks: string): void {
+    this.fantasticText = `${nicks} deu um tiro fantastico!`;
+    this.fantasticUntil = this.clock + 3.2;
+    this.cam.addTrauma(0.6);
+    music.playFantastic();
   }
 
   private applyEvent(e: SimEvent, pb: Playback): void {
@@ -1243,11 +1293,21 @@ export class MatchScene {
       }
       case 'crateHit': {
         this.crates = this.crates.filter((c) => c.id !== e.crateId);
+        // Ancora no centro de verdade da caixa (mesma referencia do render em
+        // drawCrate), nao um numero solto — senao o estouro nasce deslocado
+        // do que o jogador ve na tela.
+        const cx = e.x;
+        const cy = e.y - CRATE_WIDTH;
         const color = e.crateKind === 'health' ? PALETTE.red : PALETTE.crust;
-        this.particles.burst(e.x, e.y - 14, 26, color);
-        this.particles.flash(e.x, e.y - 14, 20);
-        this.shockwaves.spawn(e.x, e.y - 14, 50);
-        this.floatingTexts.spawn(e.x, e.y - 34, 'ACERTOU!', color);
+        // Estouro em duas camadas -- cor do premio por cima de estilhaco de
+        // madeira -- bem mais chamativo que um unico burst pequeno.
+        this.particles.burst(cx, cy, 46, color);
+        this.particles.burst(cx, cy, 30, PALETTE.dirt);
+        this.particles.puff(cx, cy, PALETTE.smoke, 10);
+        this.particles.flash(cx, cy, 34);
+        this.shockwaves.spawn(cx, cy, 85);
+        this.cam.addTrauma(0.3);
+        this.floatingTexts.spawn(cx, cy - 24, 'ACERTOU!', color);
         sfx.sfxCrateBurst();
         if (e.playerId === this.ownId) {
           this.showBanner(e.crateKind === 'health' ? 'Vida recuperada!' : 'Municao recebida!', 1000);
@@ -1720,8 +1780,10 @@ export class MatchScene {
     ctx.fillStyle = PALETTE.bottle;
     ctx.fillRect(fuelBar.x, fuelBar.y, (fuelBar.w * this.fuel) / JORBE_FUEL_PER_ROUND, fuelBar.h);
 
-    // Armas — cartas com icone desenhado, clicaveis, nao so texto. So mostra
-    // as de drop depois que o jogador pega ao menos uma no engradado.
+    // Armas — cartas so com icone, numero e municao (nunca precisam encaixar
+    // um nome inteiro, entao nunca cortam texto). O nome completo e a
+    // descricao do tiro ficam na barra de baixo (`drawWeaponInfoBar`),
+    // sempre por extenso, pra quem passar o mouse ou tiver a carta selecionada.
     this.visibleWeapons.forEach(({ w, idx }, i) => {
       const card = this.weaponCardRect(i);
       // Escudo e um toggle a parte (armado/desarmado), nao uma "arma selecionada"
@@ -1730,40 +1792,31 @@ export class MatchScene {
       const activeColor = w.defensive ? '#6fb8d6' : PALETTE.crust;
       const ammo = this.ammo[w.id];
       const out = ammo !== null && ammo !== undefined && ammo <= 0;
-      const narrow = card.w < 130;
+      const hovered = this.hoveredWeaponIdx === idx;
 
-      ctx.fillStyle = active ? activeColor : 'rgba(244,228,193,0.12)';
+      ctx.fillStyle = active ? activeColor : hovered ? 'rgba(244,228,193,0.22)' : 'rgba(244,228,193,0.12)';
       ctx.beginPath();
       ctx.roundRect(card.x, card.y, card.w, card.h, 6);
       ctx.fill();
-      ctx.strokeStyle = INK;
-      ctx.lineWidth = 2;
+      ctx.strokeStyle = hovered && !active ? PALETTE.crust : INK;
+      ctx.lineWidth = hovered && !active ? 2.5 : 2;
       ctx.stroke();
 
       const iconColor = out ? 'rgba(217,164,65,0.3)' : w.color;
       const textColor = active ? INK : out ? 'rgba(244,228,193,0.35)' : PALETTE.cream;
       const ammoLabel = ammo === null || ammo === undefined ? 'infinita' : `${ammo}`;
 
-      if (narrow) {
-        drawWeaponIcon(ctx, w.id, card.x + card.w / 2, card.y + 20, 22, iconColor);
-        ctx.textAlign = 'center';
-        ctx.fillStyle = textColor;
-        ctx.font = 'bold 12px Georgia, serif';
-        ctx.fillText(`${i + 1}`, card.x + card.w / 2, card.y + 44);
-        ctx.font = '11px Georgia, serif';
-        ctx.fillText(this.fitText(ctx, ammoLabel, card.w - 8), card.x + card.w / 2, card.y + 57);
-        ctx.textAlign = 'left';
-      } else {
-        drawWeaponIcon(ctx, w.id, card.x + 24, card.y + 31, 30, iconColor);
-        ctx.fillStyle = textColor;
-        ctx.font = 'bold 14px Georgia, serif';
-        const nameMaxW = card.w - 48 - 6;
-        ctx.fillText(this.fitText(ctx, `${i + 1}. ${w.name}`, nameMaxW), card.x + 48, card.y + 24);
-        ctx.font = '13px Georgia, serif';
-        const ammoText = ammo === null || ammo === undefined ? 'infinita' : `${ammo} restantes`;
-        ctx.fillText(this.fitText(ctx, ammoText, nameMaxW), card.x + 48, card.y + 44);
-      }
+      drawWeaponIcon(ctx, w.id, card.x + card.w / 2, card.y + 21, 24, iconColor);
+      ctx.textAlign = 'center';
+      ctx.fillStyle = textColor;
+      ctx.font = 'bold 13px Georgia, serif';
+      ctx.fillText(`${i + 1}`, card.x + card.w / 2, card.y + 46);
+      ctx.font = '11px Georgia, serif';
+      ctx.fillText(this.fitText(ctx, ammoLabel, card.w - 8), card.x + card.w / 2, card.y + 58);
+      ctx.textAlign = 'left';
     });
+
+    this.drawWeaponInfoBar(ctx, compact, y);
 
     // Estado
     let status = '';
@@ -1784,7 +1837,7 @@ export class MatchScene {
       ctx.font = '13px Georgia, serif';
       ctx.fillStyle = PALETTE.crust;
       ctx.textAlign = 'center';
-      ctx.fillText(status, this.cam.viewW / 2, y + 204);
+      ctx.fillText(status, this.cam.viewW / 2, y + 244);
       ctx.textAlign = 'left';
     }
 
@@ -1801,7 +1854,80 @@ export class MatchScene {
       ctx.textAlign = 'left';
     }
 
+    if (this.fantasticText && this.clock < this.fantasticUntil) this.drawFantasticBanner(ctx);
+
     if (this.phase === 'over' && this.finalResult) this.drawResults();
+  }
+
+  /**
+   * Nome completo e descricao da arma sob o mouse (ou, sem hover, da
+   * selecionada) — ao contrario das cartas (so icone/numero/municao), aqui
+   * sempre ha largura de sobra, entao nome e descricao nunca cortam.
+   */
+  private drawWeaponInfoBar(ctx: CanvasRenderingContext2D, compact: boolean, y: number): void {
+    const idx = this.hoveredWeaponIdx ?? this.weaponIdx;
+    const w = WEAPONS[idx];
+    if (!w) return;
+
+    const x = compact ? 14 : 400;
+    const barY = compact ? y + 186 : y + 82;
+    const maxW = (compact ? this.cam.viewW - x * 2 : this.cam.viewW - x - 20) - 34;
+
+    ctx.save();
+    drawWeaponIcon(ctx, w.id, x + 14, barY + 16, 22, w.color);
+
+    ctx.textAlign = 'left';
+    ctx.fillStyle = PALETTE.crust;
+    ctx.font = 'bold 15px Georgia, serif';
+    ctx.fillText(this.fitText(ctx, w.name, maxW), x + 32, barY + 12);
+
+    ctx.fillStyle = 'rgba(244,228,193,0.85)';
+    ctx.font = '12px Georgia, serif';
+    ctx.fillText(this.fitText(ctx, w.description, maxW), x + 32, barY + 32);
+    ctx.restore();
+  }
+
+  /**
+   * Banner enorme de "tiro fantastico" — bem maior e mais chamativo que o
+   * banner normal (que so avisa fase da rodada). Pulsa e some com fade nos
+   * ultimos instantes.
+   */
+  private drawFantasticBanner(ctx: CanvasRenderingContext2D): void {
+    const remaining = this.fantasticUntil - this.clock;
+    const fadeOut = remaining < 0.5 ? Math.max(0, remaining / 0.5) : 1;
+    const cx = this.cam.viewW / 2;
+    const cy = this.cam.viewH * 0.32;
+    const pulse = 1 + Math.sin(this.clock * 9) * 0.05;
+
+    ctx.save();
+    ctx.globalAlpha = fadeOut;
+
+    // Barra de fundo pra legibilidade contra qualquer cenario atras.
+    ctx.fillStyle = 'rgba(19,8,2,0.55)';
+    ctx.fillRect(0, cy - 56, this.cam.viewW, 112);
+
+    ctx.textAlign = 'center';
+    ctx.translate(cx, cy - 4);
+    ctx.scale(pulse, pulse);
+    ctx.font = 'bold 52px Georgia, serif';
+    ctx.strokeStyle = INK;
+    ctx.lineWidth = 7;
+    ctx.strokeText('FAANNNNNTASTIC!!!!!', 0, 0);
+    ctx.fillStyle = PALETTE.crust;
+    ctx.fillText('FAANNNNNTASTIC!!!!!', 0, 0);
+    ctx.restore();
+
+    ctx.save();
+    ctx.globalAlpha = fadeOut;
+    ctx.textAlign = 'center';
+    ctx.font = 'bold 22px Georgia, serif';
+    ctx.strokeStyle = INK;
+    ctx.lineWidth = 4;
+    ctx.strokeText(this.fantasticText, cx, cy + 40);
+    ctx.fillStyle = PALETTE.cream;
+    ctx.fillText(this.fantasticText, cx, cy + 40);
+    ctx.textAlign = 'left';
+    ctx.restore();
   }
 
   /**

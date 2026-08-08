@@ -128,6 +128,12 @@ export interface ResolutionPlan {
   finalStates: PlayerSnapshot[];
   /** Quem ativou o escudo nesta rodada — pro cliente desenhar a aura enquanto ela durar. */
   shielded: string[];
+  /**
+   * Quem deu um "tiro fantastico" nesta rodada: angulo bem vertical, forca no
+   * talo, e acertou um adversario de verdade. Broadcast pra sala inteira ver
+   * o banner, nao so quem atirou.
+   */
+  fantasticShots: { playerId: string }[];
 }
 
 export interface RoundEnd {

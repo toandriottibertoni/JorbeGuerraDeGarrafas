@@ -7,8 +7,13 @@ import {
   EARLY_RESOLVE_GRACE_MS,
   JORBE_MAX_HP,
   MAP_WIDTH,
+  NO_INPUT,
   POWER_TO_SPEED,
   PREP_DT,
+  TICK_DT,
+  Terrain,
+  stepCharacter,
+  type CharState,
   type CrateDef,
   type CratePicked,
   type MatchEnd,
@@ -493,16 +498,92 @@ test('jogador que sai no meio do preparo pode destravar a resolucao antecipada',
   assert.equal(plans.length, 1, 'com p2 fora, p0 e p1 sozinhos ja estao todos prontos');
 });
 
-// ---------------------------------------------------------------------------
-// Engradados
-// ---------------------------------------------------------------------------
-
 /** Acessa estado privado do motor — deliberado: testar a logica de coleta
  *  isolada da sorte do RNG de posicionamento e muito mais confiavel do que
  *  procurar uma seed que por acaso spawna um engradado em cima de alguem. */
 function poke(engine: MatchEngine): any {
   return engine as any;
 }
+
+// ---------------------------------------------------------------------------
+// Tiro fantastico
+// ---------------------------------------------------------------------------
+
+test('tiro reto pra cima com forca no talo que acerta um adversario e "fantastico"', () => {
+  const { engine, sink } = makeMatch(2);
+  engine.start();
+  poke(engine).wind = 0; // determinismo: sem vento, o tiro reto pra cima cai exatamente onde subiu.
+
+  const p0 = poke(engine).players.get('p0');
+  const p1 = poke(engine).players.get('p1');
+  p1.char.x = p0.char.x + 20;
+  p1.char.y = p0.char.y;
+
+  engine.applyAim('p0', { angle: 90, power: 95, weaponId: 'bazuca', fire: true });
+  advance(engine, 31);
+
+  const plan = (sink.eventsOf('roundResolve') as ResolutionPlan[])[0];
+  assert.ok(plan, 'a rodada precisa ter resolvido');
+  assert.ok(
+    plan.fantasticShots.some((f) => f.playerId === 'p0'),
+    `esperava p0 na lista de tiros fantasticos, veio ${JSON.stringify(plan.fantasticShots)}`,
+  );
+});
+
+test('angulo e forca de tiro fantastico, mas so acerta a si mesmo: nao conta', () => {
+  const { engine, sink } = makeMatch(2);
+  engine.start();
+  poke(engine).wind = 0;
+
+  // p1 bem longe -- o unico que o tiro de p0 pode alcancar e o proprio p0.
+  const p1 = poke(engine).players.get('p1');
+  p1.char.x += 1500;
+
+  engine.applyAim('p0', { angle: 90, power: 95, weaponId: 'bazuca', fire: true });
+  advance(engine, 31);
+
+  const plan = (sink.eventsOf('roundResolve') as ResolutionPlan[])[0];
+  assert.equal(plan.fantasticShots.length, 0, 'acertar so a si mesmo nao pode contar como fantastico');
+});
+
+test('forca no talo mas angulo raso que acerta um adversario nao conta como fantastico', () => {
+  const { engine, sink } = makeMatch(2);
+  engine.start();
+  poke(engine).wind = 0;
+
+  const p0 = poke(engine).players.get('p0');
+  const p1 = poke(engine).players.get('p1');
+  p1.char.x = p0.char.x + 20;
+  p1.char.y = p0.char.y;
+
+  // Mesma forca (95), mas angulo bem fora da janela de "super angulo".
+  engine.applyAim('p0', { angle: 45, power: 95, weaponId: 'bazuca', fire: true });
+  advance(engine, 31);
+
+  const plan = (sink.eventsOf('roundResolve') as ResolutionPlan[])[0];
+  assert.equal(plan.fantasticShots.length, 0, 'angulo fora da janela nao pode contar mesmo acertando com forca alta');
+});
+
+test('angulo de tiro fantastico mas forca fraca que acerta nao conta como fantastico', () => {
+  const { engine, sink } = makeMatch(2);
+  engine.start();
+  poke(engine).wind = 0;
+
+  const p0 = poke(engine).players.get('p0');
+  const p1 = poke(engine).players.get('p1');
+  p1.char.x = p0.char.x + 20;
+  p1.char.y = p0.char.y;
+
+  engine.applyAim('p0', { angle: 90, power: 50, weaponId: 'bazuca', fire: true });
+  advance(engine, 31);
+
+  const plan = (sink.eventsOf('roundResolve') as ResolutionPlan[])[0];
+  assert.equal(plan.fantasticShots.length, 0, 'forca fora da janela nao pode contar mesmo com angulo perfeito');
+});
+
+// ---------------------------------------------------------------------------
+// Engradados
+// ---------------------------------------------------------------------------
 
 test('partida comeca sem engradado nenhum', () => {
   const { engine, sink } = makeMatch(2);
@@ -594,6 +675,111 @@ test('municao de arma infinita nao quebra ao "reabastecer"', () => {
   poke(engine).checkCratePickups();
 
   assert.equal(p0.ammo.tampinha, null, 'tampinha e infinita, tem que continuar null');
+});
+
+/**
+ * O contrato central do netcode: reproduzir o plano da rodada no cliente tem
+ * que chegar EXATAMENTE onde o servidor chegou. Quem quebrou isso na pratica
+ * foi a interpolacao do cliente, que continuava puxando os outros jogadores
+ * pro alvo do ultimo snapshot (a posicao PRE-rodada, ja que o servidor so
+ * manda snapshot no preparo) durante a resolucao inteira — sem checar colisao,
+ * o que encravava o Jorbe no terreno e ainda impedia que caisse num buraco
+ * recem-aberto.
+ */
+test('reproduzir o plano no cliente chega no mesmo lugar que o servidor', () => {
+  const { engine, sink } = makeMatch(4, 77);
+  engine.start();
+
+  for (const id of ['p0', 'p1', 'p2', 'p3']) {
+    engine.applyAim(id, { angle: 90, power: 60, weaponId: 'bazuca', fire: true });
+  }
+
+  // Captura o estado dos personagens no instante em que a resolucao comeca,
+  // antes de qualquer tick dela ser simulado.
+  let before: CharState[] | null = null;
+  for (let i = 0; i < 3000 && !before; i++) {
+    engine.update(33);
+    const r = poke(engine).resolving;
+    if (r && r.ticks === 0) before = (r.chars as CharState[]).map((c) => ({ ...c }));
+  }
+  assert.ok(before, 'a resolucao precisa ter comecado');
+
+  for (let i = 0; i < 3000 && (sink.eventsOf('roundResolve') as ResolutionPlan[]).length === 0; i++) {
+    engine.update(33);
+  }
+  const plan = (sink.eventsOf('roundResolve') as ResolutionPlan[])[0];
+  assert.ok(plan, 'o plano da rodada precisa ter sido transmitido');
+
+  // Reproduz igual ao cliente: terreno limpo do mesmo mapa/seed, eventos
+  // aplicados tick a tick e a MESMA fisica compartilhada por cima.
+  const clientTerrain = Terrain.generate(engine.mapId, engine.seed);
+  const chars = before!.map((c) => ({ ...c }));
+  const byId = new Map(chars.map((c) => [c.id, c]));
+  const scratch: SimEvent[] = [];
+  let eventIdx = 0;
+
+  for (let tick = 0; tick < plan.totalTicks; tick++) {
+    while (eventIdx < plan.events.length && plan.events[eventIdx]!.tick === tick) {
+      const e = plan.events[eventIdx]!;
+      if (e.kind === 'explosion') {
+        clientTerrain.carve({ x: e.x, y: e.y, r: e.radius });
+      } else if (e.kind === 'knockback') {
+        const c = byId.get(e.playerId);
+        if (c) {
+          c.vx = e.vx;
+          c.vy = e.vy;
+          c.onGround = false;
+        }
+      } else if (e.kind === 'damage') {
+        const c = byId.get(e.playerId);
+        if (c) c.hp = e.hp;
+      } else if (e.kind === 'death') {
+        const c = byId.get(e.playerId);
+        if (c) {
+          c.alive = false;
+          c.hp = 0;
+        }
+      }
+      eventIdx++;
+    }
+    for (const c of chars) stepCharacter(clientTerrain, c, NO_INPUT, TICK_DT, tick, scratch);
+  }
+
+  for (const fs of plan.finalStates) {
+    const mine = byId.get(fs.id);
+    assert.ok(mine, `faltou o personagem ${fs.id} na reproducao`);
+    assert.ok(
+      Math.abs(mine!.x - fs.x) < 0.001,
+      `${fs.id}: x do cliente (${mine!.x}) divergiu do servidor (${fs.x})`,
+    );
+    assert.ok(
+      Math.abs(mine!.y - fs.y) < 0.001,
+      `${fs.id}: y do cliente (${mine!.y}) divergiu do servidor (${fs.y})`,
+    );
+    assert.equal(mine!.alive, fs.alive, `${fs.id}: vivo/morto precisa bater`);
+  }
+});
+
+test('historico de crateras usa o raio de cada estouro, nao o raio cheio da arma', () => {
+  const { engine, sink } = makeMatch(2);
+  engine.start();
+
+  // Racimo espalha sub-estouros de raio reduzido. Se o historico gravasse o
+  // raio cheio da arma, quem entrasse no meio da partida (catchUp) receberia
+  // um terreno com crateras maiores que as de verdade.
+  poke(engine).players.get('p0').ammo.racimo = 5;
+  // Reto pra cima: volta e estoura no proprio pe, independente de onde o
+  // spawn caiu — nao corre o risco de sair do mapa sem explodir.
+  engine.applyAim('p0', { angle: 90, power: 50, weaponId: 'racimo', fire: true });
+  advance(engine, 31);
+
+  const plan = (sink.eventsOf('roundResolve') as ResolutionPlan[])[0];
+  const eventRadii = plan.events.filter((e) => e.kind === 'explosion').map((e) => e.radius).sort();
+  assert.ok(eventRadii.length > 1, 'sanity: o racimo precisa gerar varios estouros');
+  assert.ok(new Set(eventRadii).size > 1, 'sanity: os sub-estouros tem raio menor que o principal');
+
+  const carveRadii = (poke(engine).carves as { r: number }[]).map((c) => c.r).sort();
+  assert.deepEqual(carveRadii, eventRadii, 'cada cratera gravada precisa bater com o raio do estouro que a abriu');
 });
 
 test('engradado de municao pode dar uma arma de drop pela primeira vez', () => {
@@ -760,7 +946,7 @@ test('bot respeita municao limitada — nunca atira arma que nao tem mais', () =
 /** Plano sintetico: testar attributeStats isolado da fisica real e muito mais
  *  confiavel do que procurar uma seed que por acaso acerta um tiro em alguem. */
 function fakePlan(shots: ResolutionPlan['shots'], events: ResolutionPlan['events']): ResolutionPlan {
-  return { round: 1, wind: 0, shots, events, totalTicks: 10, finalStates: [], shielded: [] };
+  return { round: 1, wind: 0, shots, events, totalTicks: 10, finalStates: [], shielded: [], fantasticShots: [] };
 }
 
 test('dano de explosao e creditado a quem atirou', () => {

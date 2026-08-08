@@ -6,6 +6,9 @@ import {
   CRATE_PICKUP_RADIUS,
   CRATE_WIDTH,
   EARLY_RESOLVE_GRACE_MS,
+  FANTASTIC_ANGLE_MAX,
+  FANTASTIC_ANGLE_MIN,
+  FANTASTIC_MIN_POWER,
   JORBE_FUEL_PER_ROUND,
   JORBE_HEIGHT,
   JORBE_MAX_HP,
@@ -150,6 +153,8 @@ export class MatchEngine {
     events: SimEvent[];
     shielded: string[];
     ticks: number;
+    /** shotId -> ownerId dos tiros com angulo/forca de "tiro fantastico". */
+    fantasticCandidates: Map<number, string>;
   } | null = null;
   /** Teto de ticks simulados por chamada de update() — mantem cada chamada barata. */
   private static readonly RESOLVE_TICKS_PER_UPDATE = 60;
@@ -611,6 +616,10 @@ export class MatchEngine {
     const shots: ShotInit[] = [];
     const projectiles: Projectile[] = [];
     const shielded: string[] = [];
+    // Candidatos a "tiro fantastico": angulo bem vertical + forca no talo,
+    // decidido aqui (onde temos aim.angle/aim.power de verdade) e confirmado
+    // so depois, quando soubermos se o tiro realmente acertou um adversario.
+    const fantasticCandidates = new Map<number, string>();
 
     // Ordem estavel: dois servidores com a mesma entrada produzem o mesmo plano.
     for (const id of this.order) {
@@ -659,6 +668,10 @@ export class MatchEngine {
         vy: dirY * speed,
       };
       shots.push(shot);
+
+      if (aim.power >= FANTASTIC_MIN_POWER && aim.angle >= FANTASTIC_ANGLE_MIN && aim.angle <= FANTASTIC_ANGLE_MAX) {
+        fantasticCandidates.set(shot.id, p.id);
+      }
       projectiles.push({
         id: shot.id,
         ownerId: shot.ownerId,
@@ -675,7 +688,7 @@ export class MatchEngine {
 
     this.phase = 'resolve';
     this.phaseElapsedMs = 0;
-    this.resolving = { chars, shots, projectiles, events: [], shielded, ticks: 0 };
+    this.resolving = { chars, shots, projectiles, events: [], shielded, ticks: 0, fantasticCandidates };
   }
 
   /**
@@ -689,7 +702,7 @@ export class MatchEngine {
 
     const budget = Math.min(MatchEngine.RESOLVE_TICKS_PER_UPDATE, PHASE_RESOLVE_MAX_TICKS - r.ticks);
     for (let i = 0; i < budget; i++) {
-      stepProjectiles(this.terrain, r.projectiles, r.chars, this.wind, TICK_DT, r.ticks, r.events);
+      stepProjectiles(this.terrain, r.projectiles, r.chars, this.wind, TICK_DT, r.ticks, r.events, this.crates);
       for (const c of r.chars) {
         stepCharacter(this.terrain, c, NO_INPUT, TICK_DT, r.ticks, r.events);
       }
@@ -709,12 +722,28 @@ export class MatchEngine {
 
     for (const e of r.events) {
       if (e.kind === 'explosion') {
-        this.carves.push({ x: e.x, y: e.y, r: getWeapon(e.weaponId).radius });
+        // `e.radius`, nao o raio cheio da arma: os sub-estouros das armas
+        // racimo tem raio reduzido, e gravar o raio cheio aqui daria um
+        // terreno com crateras maiores que as de verdade pra quem entrasse
+        // no meio da partida (catchUp) — divergencia direta com o servidor.
+        this.carves.push({ x: e.x, y: e.y, r: e.radius });
       } else if (e.kind === 'death') {
         this.noteDeath(e.playerId);
       }
     }
     this.claimCratesFromExplosions(r.shots, r.events);
+
+    // Confirma os candidatos a "tiro fantastico": so conta se o tiro (o
+    // ORIGINAL, nao um sub-estouro de racimo) realmente feriu um adversario
+    // -- acertar a si mesmo nao vale.
+    const fantasticOwners = new Set<string>();
+    for (const e of r.events) {
+      if (e.kind !== 'damage' || e.shotId === undefined) continue;
+      const ownerId = r.fantasticCandidates.get(e.shotId);
+      if (!ownerId || ownerId === e.playerId) continue;
+      fantasticOwners.add(ownerId);
+    }
+    const fantasticShots = [...fantasticOwners].map((playerId) => ({ playerId }));
 
     const plan: ResolutionPlan = {
       round: this.round,
@@ -734,6 +763,7 @@ export class MatchEngine {
         alive: c.alive,
       })),
       shielded: r.shielded,
+      fantasticShots,
     };
 
     // O cliente reproduz o plano em tempo real; damos meio segundo de folga

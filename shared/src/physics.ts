@@ -1,4 +1,5 @@
 import {
+  CRATE_WIDTH,
   FALL_DAMAGE_MIN_SPEED,
   FALL_DAMAGE_PER_SPEED,
   GRAVITY,
@@ -90,7 +91,16 @@ export type SimEvent =
     }
   | { kind: 'bounce'; tick: number; shotId: number; x: number; y: number; vx: number; vy: number }
   | { kind: 'knockback'; tick: number; playerId: string; vx: number; vy: number }
-  | { kind: 'damage'; tick: number; playerId: string; amount: number; hp: number; cause: DamageCause }
+  | {
+      kind: 'damage';
+      tick: number;
+      playerId: string;
+      amount: number;
+      hp: number;
+      cause: DamageCause;
+      /** So presente pra dano de explosao -- liga o dano de volta ao tiro que causou, pra achar "tiro fantastico". */
+      shotId?: number;
+    }
   | { kind: 'death'; tick: number; playerId: string; cause: DamageCause }
   | { kind: 'blocked'; tick: number; playerId: string }
   | {
@@ -144,6 +154,18 @@ function feetInLiquid(t: Terrain, c: CharState): boolean {
 export function pointInChar(c: CharState, px: number, py: number): boolean {
   const half = JORBE_WIDTH / 2;
   return px >= c.x - half && px <= c.x + half && py >= c.y - JORBE_HEIGHT && py <= c.y;
+}
+
+/**
+ * Um ponto esta dentro da caixa de um engradado? `cr.y` e o pe (onde encosta
+ * no chao), e o render desenha a caixa centrada em `cr.y - CRATE_WIDTH` —
+ * mesma referencia usada aqui, senao o hitbox real ficaria deslocado do que
+ * o jogador ve na tela.
+ */
+export function pointInCrate(cr: { x: number; y: number }, px: number, py: number): boolean {
+  const half = CRATE_WIDTH / 2;
+  const cy = cr.y - CRATE_WIDTH;
+  return px >= cr.x - half && px <= cr.x + half && py >= cy - half && py <= cy + half;
 }
 
 /** Move no eixo X em passos de 1px, subindo degraus. Retorna o quanto andou. */
@@ -288,10 +310,11 @@ export function applyDamage(
   cause: DamageCause,
   tick: number,
   events: SimEvent[],
+  shotId?: number,
 ): void {
   if (!c.alive || amount <= 0) return;
   c.hp = Math.max(0, c.hp - amount);
-  events.push({ kind: 'damage', tick, playerId: c.id, amount, hp: c.hp, cause });
+  events.push({ kind: 'damage', tick, playerId: c.id, amount, hp: c.hp, cause, shotId });
   if (c.hp === 0) {
     c.alive = false;
     events.push({ kind: 'death', tick, playerId: c.id, cause });
@@ -337,8 +360,9 @@ export function explode(
       if (dist > totalReach) continue;
 
       // Escudo ativo bloqueia dano, empurrao E puxao do vortice por inteiro —
-      // o jogador fica plantado no lugar, sem perder vida.
-      if (c.shielded) {
+      // o jogador fica plantado no lugar, sem perder vida. Excecao: armas
+      // "fantasma" (`ignoresShield`) passam direto, como no jogo de referencia.
+      if (c.shielded && !w.ignoresShield) {
         events.push({ kind: 'blocked', tick: evTick, playerId: c.id });
         continue;
       }
@@ -358,7 +382,11 @@ export function explode(
         // Velocidade ABSOLUTA depois do empurrao: o cliente copia esse valor
         // em vez de recalcular o impulso, entao os dois lados nunca divergem.
         events.push({ kind: 'knockback', tick: evTick, playerId: c.id, vx: c.vx, vy: c.vy });
-        applyDamage(c, Math.round(w.damage * falloff * p.angleBonus * dmgScale), 'blast', evTick, events);
+        // `p.id`, nao o `shotId` local do blastAt: sub-estouros de racimo usam
+        // um id sintetico (p.id*1000+i) que nunca aparece na lista de tiros
+        // originais -- o dano precisa voltar sempre pro tiro de verdade que
+        // o jogador disparou, nao pro estouro interno que o causou.
+        applyDamage(c, Math.round(w.damage * falloff * p.angleBonus * dmgScale), 'blast', evTick, events, p.id);
       } else {
         // Fora do raio de dano mas dentro do halo do vortice: so puxao pro
         // centro, sem ferir -- e a "sucção" antes do estouro de verdade.
@@ -393,7 +421,10 @@ export function explode(
 /**
  * Avanca todos os projeteis um passo. Projeteis colidem com terreno, com
  * personagens vivos e — de proposito — entre si: como todo mundo atira junto,
- * dois tiros se encontrarem no ar e parte da graca.
+ * dois tiros se encontrarem no ar e parte da graca. Tambem colidem com
+ * engradados: sem isso, um tiro certeiro simplesmente atravessava a caixa
+ * (ela nao e solida nem personagem) e so "acertava" de fato se por acaso
+ * uma explosao gerada por outro motivo terminasse perto o bastante.
  */
 export function stepProjectiles(
   t: Terrain,
@@ -403,6 +434,7 @@ export function stepProjectiles(
   dt: number,
   tick: number,
   events: SimEvent[],
+  crates: readonly { x: number; y: number }[] = [],
 ): void {
   for (const p of projectiles) {
     if (p.dead) continue;
@@ -449,6 +481,15 @@ export function stepProjectiles(
         break;
       }
       if (hitChar) break;
+
+      let hitCrate = false;
+      for (const cr of crates) {
+        if (!pointInCrate(cr, p.x, p.y)) continue;
+        explode(t, p, chars, tick, events);
+        hitCrate = true;
+        break;
+      }
+      if (hitCrate) break;
     }
 
     if (!p.dead && w.fuse !== null && p.age >= w.fuse) {

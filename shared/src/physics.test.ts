@@ -8,10 +8,23 @@ import {
   NO_INPUT,
   boxHits,
   explode,
+  pointInCrate,
   stepCharacter,
   stepProjectiles,
 } from './physics.js';
-import { JORBE_FUEL_PER_ROUND, JORBE_MAX_HP, MAP_HEIGHT, TICK_DT } from './constants.js';
+import { CRATE_WIDTH, JORBE_FUEL_PER_ROUND, JORBE_MAX_HP, MAP_HEIGHT, MAP_WIDTH, TICK_DT } from './constants.js';
+
+test('pointInCrate: hitbox bate com o quadrado desenhado (centrado em y - CRATE_WIDTH)', () => {
+  const crate = { x: 500, y: 300 };
+  const centerY = 300 - CRATE_WIDTH;
+  const half = CRATE_WIDTH / 2;
+
+  assert.equal(pointInCrate(crate, 500, centerY), true, 'centro tem que bater');
+  assert.equal(pointInCrate(crate, 500 - half, centerY), true, 'borda esquerda ainda conta');
+  assert.equal(pointInCrate(crate, 500 - half - 1, centerY), false, '1px fora da borda ja nao conta');
+  assert.equal(pointInCrate(crate, 500, centerY - half - 1), false, '1px acima do topo ja nao conta');
+  assert.equal(pointInCrate(crate, 500, centerY + half + 1), false, '1px abaixo da base ja nao conta');
+});
 
 function makeChar(id: string, x: number, y: number): CharState {
   return {
@@ -218,6 +231,31 @@ test('escudo bloqueia dano e empurrao da explosao por inteiro', () => {
   assert.ok(!ev.some((e) => e.kind === 'damage' || e.kind === 'knockback'), 'nao pode gerar dano nem empurrao');
 });
 
+test('bala fantasma ignora o escudo e causa dano normalmente', () => {
+  const t = Terrain.generate('praia', 5);
+  const c = makeChar('a', 1030, 500);
+  c.shielded = true;
+  const p: Projectile = {
+    id: 1,
+    ownerId: 'x',
+    weaponId: 'fantasma',
+    x: 1000,
+    y: 500 - 15,
+    vx: 0,
+    vy: 0,
+    age: 0,
+    dead: false,
+    angleBonus: 1,
+  };
+
+  const ev: SimEvent[] = [];
+  explode(t, p, [c], 0, ev);
+
+  assert.ok(c.hp < JORBE_MAX_HP, 'a bala fantasma tem que furar o escudo');
+  assert.ok(!ev.some((e) => e.kind === 'blocked'), 'nao pode registrar bloqueio nenhum');
+  assert.ok(ev.some((e) => e.kind === 'damage' && e.playerId === 'a'), 'precisa causar dano de verdade');
+});
+
 test('explosao fora do raio nao encosta em ninguem', () => {
   const t = Terrain.generate('praia', 5);
   const c = makeChar('a', 1400, 500);
@@ -316,6 +354,39 @@ test('cair na agua mata igual ao vazio (mapa da ponte)', () => {
   );
 });
 
+test('ponte: explodir o deck sob os pes derruba o jogador no rio', () => {
+  const t = Terrain.generate('ponte', 21);
+  const x = Math.floor(MAP_WIDTH / 2);
+  const c = makeChar('a', x, t.groundBelow(x, 0) - 1);
+  settle(t, c, 60);
+  assert.equal(c.alive, true, 'sanity: precisa comecar vivo em cima do deck');
+
+  // Bazuca (raio 85) no pe do jogador: o buraco e bem maior que a espessura
+  // do deck, entao nao pode sobrar chao nenhum embaixo dele.
+  const p: Projectile = {
+    id: 1,
+    ownerId: 'x',
+    weaponId: 'bazuca',
+    x: c.x,
+    y: c.y + 10,
+    vx: 0,
+    vy: 0,
+    age: 0,
+    dead: false,
+    angleBonus: 1,
+  };
+  const ev: SimEvent[] = [];
+  explode(t, p, [c], 0, ev);
+
+  for (let i = 0; i < 600 && c.alive; i++) stepCharacter(t, c, NO_INPUT, TICK_DT, i, ev);
+
+  assert.equal(c.alive, false, 'sem deck embaixo, o jogador tem que despencar');
+  assert.ok(
+    ev.some((e) => e.kind === 'death' && e.cause === 'water'),
+    'a morte precisa ser afogamento no rio, nao ficar encravado na beirada',
+  );
+});
+
 test('dano zera vida e emite morte uma unica vez', () => {
   const t = Terrain.generate('praia', 5);
   const c = makeChar('a', 1000, 500);
@@ -366,6 +437,56 @@ test('projetil explode ao bater no terreno e abre cratera', () => {
   assert.ok(p.dead, 'projetil deveria ter explodido');
   assert.ok(ev.some((e) => e.kind === 'explosion'));
   assert.equal(t.isSolid(x, ground + 2), false, 'deveria ter aberto cratera no chao');
+});
+
+test('projetil detona ao tocar um engradado, mesmo sem chao nem personagem por perto', () => {
+  const t = Terrain.generate('praia', 5);
+  // Bem no ceu, longe do chao -- se o projetil so detonasse por terreno ou
+  // personagem (como era antes), esse tiro atravessaria a caixa sem nada
+  // acontecer.
+  const crate = { x: 1050, y: 100 };
+  // `crate.y` e o pe (mesma referencia do personagem) -- a caixa desenhada
+  // fica centrada em `crate.y - CRATE_WIDTH`, entao o tiro precisa voar
+  // NESSA altura, nao na altura do pe, senao passa por baixo da caixa.
+  const p: Projectile = {
+    id: 1,
+    ownerId: 'x',
+    weaponId: 'tampinha',
+    x: 1000,
+    y: crate.y - CRATE_WIDTH,
+    vx: 600,
+    vy: 0,
+    age: 1,
+    dead: false,
+    angleBonus: 1,
+  };
+
+  const ev: SimEvent[] = [];
+  for (let i = 0; i < 30 && !p.dead; i++) {
+    stepProjectiles(t, [p], [], 0, TICK_DT, i, ev, [crate]);
+  }
+
+  assert.ok(p.dead, 'o tiro precisa detonar ao encostar na caixa');
+  assert.ok(ev.some((e) => e.kind === 'explosion'), 'precisa gerar uma explosao de verdade, nao so sumir');
+});
+
+test('sem lista de engradados (chamada antiga), o projetil nao quebra nem detona a toa', () => {
+  const t = Terrain.generate('praia', 5);
+  const p: Projectile = {
+    id: 1,
+    ownerId: 'x',
+    weaponId: 'tampinha',
+    x: 1000,
+    y: 100,
+    vx: 600,
+    vy: 0,
+    age: 1,
+    dead: false,
+    angleBonus: 1,
+  };
+  const ev: SimEvent[] = [];
+  stepProjectiles(t, [p], [], 0, TICK_DT, 0, ev);
+  assert.equal(p.dead, false, 'sem engradados no ar livre, o tiro so continua voando');
 });
 
 test('dois projeteis que se cruzam no ar explodem juntos', () => {

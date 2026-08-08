@@ -197,12 +197,15 @@ export function sfxPickup(kind: 'health' | 'ammo'): void {
   notes.forEach((f, i) => tone({ freqFrom: f, duration: 0.09, type: 'triangle', gain: 0.16, delay: i * 0.06 }));
 }
 
-/** Tiro estourou um engradado no ar — crack seco de madeira quebrando + o premio chegando. */
+/** Tiro estourou um engradado — estalo grave de impacto + madeira estilhacando + o premio chegando. */
 export function sfxCrateBurst(): void {
-  burst(0.12, { highpass: 900, gain: 0.22 });
-  tone({ freqFrom: 220, freqTo: 90, duration: 0.12, type: 'square', gain: 0.14, delay: 0.01 });
-  [660, 880, 1100].forEach((f, i) =>
-    tone({ freqFrom: f, duration: 0.08, type: 'triangle', gain: 0.15, delay: 0.1 + i * 0.055 }),
+  // Peso do impacto primeiro (grave e curto), so depois o estalo agudo da madeira.
+  tone({ freqFrom: 150, freqTo: 50, duration: 0.1, type: 'sine', gain: 0.22 });
+  burst(0.18, { highpass: 800, gain: 0.32 });
+  burst(0.1, { lowpass: 500, gain: 0.18, delay: 0.02 });
+  tone({ freqFrom: 260, freqTo: 90, duration: 0.14, type: 'square', gain: 0.18, delay: 0.02 });
+  [660, 880, 1100, 1320].forEach((f, i) =>
+    tone({ freqFrom: f, duration: 0.09, type: 'triangle', gain: 0.18, delay: 0.11 + i * 0.05 }),
   );
 }
 
