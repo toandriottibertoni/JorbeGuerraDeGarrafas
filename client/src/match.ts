@@ -1450,15 +1450,23 @@ export class MatchScene {
     const aimPreview = this.computeAimPreview();
     if (aimPreview) {
       ctx.save();
-      ctx.setLineDash([4, 5]);
-      ctx.strokeStyle = this.weapon.color;
-      ctx.globalAlpha = 0.65;
-      ctx.lineWidth = 2;
+      ctx.lineCap = 'round';
+      ctx.lineJoin = 'round';
+      ctx.setLineDash([5, 6]);
+      // Contorno escuro por baixo + cor da arma por cima -- igual ao braco
+      // da mira, senao a linha (fina e semitransparente) sumia contra
+      // terreno ou ceu da mesma cor.
+      ctx.globalAlpha = 0.85;
+      ctx.strokeStyle = INK;
+      ctx.lineWidth = 5;
       ctx.beginPath();
       ctx.moveTo(aimPreview[0]!.x, aimPreview[0]!.y);
       for (let i = 1; i < aimPreview.length; i++) {
         ctx.lineTo(aimPreview[i]!.x, aimPreview[i]!.y);
       }
+      ctx.stroke();
+      ctx.strokeStyle = this.weapon.color;
+      ctx.lineWidth = 3;
       ctx.stroke();
       ctx.globalAlpha = 1;
       ctx.restore();
@@ -2120,12 +2128,18 @@ export class MatchScene {
     if (!anchor) return;
 
     ctx.save();
-    ctx.strokeStyle = PALETTE.crust;
-    ctx.lineWidth = 3;
+    ctx.lineCap = 'round';
     ctx.setLineDash([6, 6]);
+    // Mesmo contorno escuro + nucleo claro do braco/trajetoria, pra nao
+    // sumir contra terreno ou ceu da mesma cor.
+    ctx.strokeStyle = INK;
+    ctx.lineWidth = 6;
     ctx.beginPath();
     ctx.moveTo(anchor.x, anchor.y);
     ctx.lineTo(this.dragPointer.x, this.dragPointer.y);
+    ctx.stroke();
+    ctx.strokeStyle = PALETTE.crust;
+    ctx.lineWidth = 4;
     ctx.stroke();
     ctx.setLineDash([]);
     ctx.fillStyle = PALETTE.red;

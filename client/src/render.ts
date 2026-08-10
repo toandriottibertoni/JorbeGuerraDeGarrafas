@@ -801,22 +801,36 @@ export function drawJorbe(ctx: CanvasRenderingContext2D, s: JorbeDrawState): voi
 
   // Mira: braco esticado apontando pro angulo escolhido — o comprimento
   // cresce com a forca, dando pista visual de o quao longe vai o tiro.
+  // Contorno escuro + nucleo claro (feito o texto com stroke+fill do resto
+  // do jogo) pra continuar visivel em qualquer fundo, nao so contra o ceu —
+  // a versao antiga (3px so em INK) sumia contra o terreno escuro.
   if (s.aimAngle !== null && s.alive) {
     const rad = (s.aimAngle * Math.PI) / 180;
     const ox = cx;
     const oy = feet - h * 0.55;
-    const armLen = 14 + Math.max(0, Math.min(1, s.aimPower)) * 16;
+    const armLen = 18 + Math.max(0, Math.min(1, s.aimPower)) * 20;
+    const tipX = ox + Math.cos(rad) * armLen;
+    const tipY = oy - Math.sin(rad) * armLen;
     ctx.save();
+    ctx.lineCap = 'round';
     ctx.strokeStyle = INK;
-    ctx.lineWidth = 3;
+    ctx.lineWidth = 8;
     ctx.beginPath();
     ctx.moveTo(ox, oy);
-    ctx.lineTo(ox + Math.cos(rad) * armLen, oy - Math.sin(rad) * armLen);
+    ctx.lineTo(tipX, tipY);
     ctx.stroke();
-    // Luva branca na ponta
-    ctx.fillStyle = PALETTE.cream;
+    ctx.strokeStyle = PALETTE.crust;
+    ctx.lineWidth = 5;
     ctx.beginPath();
-    ctx.arc(ox + Math.cos(rad) * (armLen + 2), oy - Math.sin(rad) * (armLen + 2), 3.5, 0, Math.PI * 2);
+    ctx.moveTo(ox, oy);
+    ctx.lineTo(tipX, tipY);
+    ctx.stroke();
+    // Luva na ponta, maior e com contorno pra continuar legivel de longe.
+    ctx.fillStyle = PALETTE.cream;
+    ctx.strokeStyle = INK;
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.arc(tipX, tipY, 5.5, 0, Math.PI * 2);
     ctx.fill();
     ctx.stroke();
     ctx.restore();
