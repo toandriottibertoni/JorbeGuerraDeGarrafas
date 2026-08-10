@@ -59,9 +59,16 @@ export class RoomManager {
   private readonly emitter: Emitter;
   private timer: NodeJS.Timeout | null = null;
   private lastTickAt = 0;
+  /** clientId -> timer de remocao pendente (ver `scheduleDisconnect`). */
+  private readonly disconnectTimers = new Map<string, NodeJS.Timeout>();
+  /** Janela pra reconectar (mesma identidade) antes de contar como desistencia de verdade. */
+  private readonly reconnectGraceMs: number;
+  private static readonly DEFAULT_RECONNECT_GRACE_MS = 25_000;
 
-  constructor(emitter: Emitter) {
+  /** `reconnectGraceMs` e ajustavel so pra teste conseguir exercitar o timeout sem esperar 25s de verdade. */
+  constructor(emitter: Emitter, reconnectGraceMs = RoomManager.DEFAULT_RECONNECT_GRACE_MS) {
     this.emitter = emitter;
+    this.reconnectGraceMs = reconnectGraceMs;
   }
 
   start(): void {
@@ -73,6 +80,8 @@ export class RoomManager {
   stop(): void {
     if (this.timer) clearInterval(this.timer);
     this.timer = null;
+    for (const t of this.disconnectTimers.values()) clearTimeout(t);
+    this.disconnectTimers.clear();
   }
 
   private tick(): void {
@@ -117,8 +126,40 @@ export class RoomManager {
   }
 
   removeClient(id: string): void {
+    this.cancelPendingDisconnect(id);
     this.leaveRoom(id);
     this.clients.delete(id);
+  }
+
+  /**
+   * Socket caiu (rede ruim, aba fechada, troca de aba/wifi) — diferente de
+   * uma saida explicita (`leaveRoom`, chamada direto por "sair da sala/
+   * partida"), isso NAO remove o cliente na hora. Da uma janela pra ele
+   * voltar com a mesma identidade (ver `cancelPendingDisconnect`, chamado no
+   * hello de reconexao) antes de contar como desistencia de verdade. O
+   * cliente continua ocupando a vaga/o corpo na partida o tempo todo — so
+   * fica sem receber input nenhum ate reconectar ou a janela estourar.
+   */
+  scheduleDisconnect(id: string): void {
+    if (!this.clients.has(id)) return;
+    this.cancelPendingDisconnect(id); // seguranca: nunca dois timers pro mesmo id
+    const timer = setTimeout(() => {
+      this.disconnectTimers.delete(id);
+      this.removeClient(id);
+    }, this.reconnectGraceMs);
+    // Nunca deve segurar o processo vivo sozinho (ex: um teste que fecha o
+    // servidor antes da janela estourar, ou um shutdown normal do servidor).
+    timer.unref();
+    this.disconnectTimers.set(id, timer);
+  }
+
+  /** Reconectou a tempo (mesma identidade) — cancela a remocao pendente. Devolve se havia uma. */
+  cancelPendingDisconnect(id: string): boolean {
+    const timer = this.disconnectTimers.get(id);
+    if (!timer) return false;
+    clearTimeout(timer);
+    this.disconnectTimers.delete(id);
+    return true;
   }
 
   // -------------------------------------------------------------------------

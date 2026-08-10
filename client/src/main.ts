@@ -17,12 +17,14 @@ app.innerHTML = `
     <input type="range" id="musicVolume" min="0" max="100" />
     <button id="musicMuteToggle" class="ghost"></button>
   </div>
+  <div id="connBanner" class="hidden">Conexao instavel — reconectando...</div>
   <div id="versionTag">v${__APP_VERSION__}</div>
 `;
 
 const overlay = document.querySelector<HTMLDivElement>('#overlay')!;
 const panel = document.querySelector<HTMLDivElement>('#panel')!;
 const canvas = document.querySelector<HTMLCanvasElement>('#game')!;
+const connBanner = document.querySelector<HTMLDivElement>('#connBanner')!;
 const muteBtn = document.querySelector<HTMLButtonElement>('#muteBtn')!;
 const musicMenuBtn = document.querySelector<HTMLButtonElement>('#musicMenuBtn')!;
 const volumePanel = document.querySelector<HTMLDivElement>('#volumePanel')!;
@@ -448,10 +450,21 @@ net.socket.on('matchEnd', () => {
 
 net.socket.on('disconnect', () => {
   if (!user) return; // desconexao deliberada do logout — ja tratada la.
-  inMatch = false;
-  lastError = 'Conexao perdida. Recarregue a pagina.';
-  showOverlay(true);
+  // NAO mexe em `inMatch`/`room`/`showOverlay` aqui — o socket.io tenta
+  // reconectar sozinho por baixo dos panos (config padrao), e o servidor da
+  // uma janela pra essa mesma identidade voltar pro lugar exato de onde
+  // saiu (ver RoomManager.scheduleDisconnect). So mostra um aviso discreto
+  // em cima do jogo/tela atual em vez de um beco sem saida — se realmente
+  // nao voltar, o "conectando" continua ate o usuario decidir recarregar.
+  connBanner.classList.remove('hidden');
 });
+
+net.onReconnected = () => {
+  connBanner.classList.add('hidden');
+  // O servidor ja reenviou `roomState`/`matchStart` de catch-up junto do
+  // hello de reconexao — os listeners deles cuidam de resincronizar sala e
+  // partida sozinhos, nao precisa fazer mais nada aqui.
+};
 
 // ESC volta ao lobby quando a partida acabou.
 window.addEventListener('keydown', (e) => {

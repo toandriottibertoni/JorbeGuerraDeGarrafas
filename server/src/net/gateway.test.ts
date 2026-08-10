@@ -52,12 +52,12 @@ after(async () => {
   await disconnectMongo();
 });
 
-async function startServer(): Promise<Harness> {
+async function startServer(reconnectGraceMs?: number): Promise<Harness> {
   await ensureDb();
   const app = buildApp();
   const http = createServer(app);
   const io = new Server(http);
-  const rooms = createGateway(io);
+  const rooms = createGateway(io, reconnectGraceMs);
   await new Promise<void>((resolve) => http.listen(0, resolve));
   const addr = http.address();
   if (!addr || typeof addr === 'string') throw new Error('sem porta');
@@ -93,6 +93,59 @@ async function connect(h: Harness, nick: string): Promise<ClientSocket> {
     sock.on('connect_error', reject);
     sock.on('connect', () => resolve());
   });
+  await new Promise<void>((resolve, reject) => {
+    sock.once('hello', (res: { ok: boolean; reason?: string }) => {
+      if (res.ok) resolve();
+      else reject(new Error(res.reason ?? 'hello recusado'));
+    });
+    sock.emit('hello', { engineVersion: ENGINE_VERSION });
+  });
+  return sock;
+}
+
+/** Conecta como convidado e devolve o cookie (pra reconectar depois) junto com o id ESTAVEL (nao muda numa reconexao). */
+async function connectAndGetId(
+  h: Harness,
+  nick: string,
+): Promise<{ sock: ClientSocket; playerId: string; cookie: string }> {
+  const cookie = await guestCookie(h.baseUrl, nick);
+  const sock = ioc(h.baseUrl, { transports: ['websocket'], extraHeaders: { Cookie: cookie } });
+  h.clients.push(sock);
+  await new Promise<void>((resolve, reject) => {
+    sock.on('connect_error', reject);
+    sock.on('connect', () => resolve());
+  });
+  const playerId = await new Promise<string>((resolve, reject) => {
+    sock.once('hello', (res: { ok: boolean; reason?: string; playerId: string }) => {
+      if (res.ok) resolve(res.playerId);
+      else reject(new Error(res.reason ?? 'hello recusado'));
+    });
+    sock.emit('hello', { engineVersion: ENGINE_VERSION });
+  });
+  return { sock, playerId, cookie };
+}
+
+/**
+ * So abre o transporte com um cookie ja existente, SEM mandar o hello ainda
+ * — quem chama precisa registrar os listeners de `roomState`/`matchStart`
+ * antes de emitir, senao corre o risco de perder esses eventos: o servidor
+ * manda hello + rooms + roomState + matchStart em rajada, tudo na mesma
+ * volta sincrona do handler, entao um listener plugado DEPOIS do hello
+ * responder pode chegar tarde demais pros que vieram logo em seguida.
+ */
+async function connectTransportWithCookie(h: Harness, cookie: string): Promise<ClientSocket> {
+  const sock = ioc(h.baseUrl, { transports: ['websocket'], extraHeaders: { Cookie: cookie } });
+  h.clients.push(sock);
+  await new Promise<void>((resolve, reject) => {
+    sock.on('connect_error', reject);
+    sock.on('connect', () => resolve());
+  });
+  return sock;
+}
+
+/** Reconecta com um cookie ja existente — simula o MESMO jogador voltando depois de uma queda de rede. */
+async function reconnectWithCookie(h: Harness, cookie: string): Promise<ClientSocket> {
+  const sock = await connectTransportWithCookie(h, cookie);
   await new Promise<void>((resolve, reject) => {
     sock.once('hello', (res: { ok: boolean; reason?: string }) => {
       if (res.ok) resolve();
@@ -556,6 +609,144 @@ test('comandos antes do hello sao recusados', async () => {
     const err = waitFor<string>(sock, 'errorMsg');
     sock.emit('roomCreate', { name: 'Invasao', mapId: 'fabrica' });
     assert.match(await err, /conecte-se/i);
+  } finally {
+    await stopServer(h);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Reconexao com tolerancia (queda de rede nao pode custar a vaga na partida)
+// ---------------------------------------------------------------------------
+
+test('cai a conexao e reconecta a tempo -- continua na sala e na partida, sem ser eliminado', async () => {
+  const h = await startServer(3000); // janela curta so pra nao deixar o teste lento
+  try {
+    const dono = await connectAndGetId(h, 'Instavel');
+    const bot = await connect(h, 'Fiel'); // segunda pessoa so pra sobrar alguem vivo apos a "queda"
+
+    const created = waitFor<RoomState>(dono.sock, 'roomState');
+    dono.sock.emit('roomCreate', { name: 'Instavel', mapId: 'fabrica' });
+    const room = await created;
+
+    const joined = waitFor<RoomState>(dono.sock, 'roomState');
+    bot.emit('roomJoin', { roomId: room.id });
+    await joined;
+
+    const started = waitFor<MatchStart>(dono.sock, 'matchStart');
+    dono.sock.emit('roomStart');
+    await started;
+
+    // Simula a rede caindo: desconecta o socket sem mandar `roomLeave`.
+    dono.sock.disconnect();
+    await new Promise((r) => setTimeout(r, 400)); // da tempo do servidor processar o 'disconnect'
+
+    // Reconecta com o MESMO cookie (mesma identidade) antes da janela acabar.
+    // Os listeners precisam estar plugados ANTES do hello: o servidor manda
+    // hello + rooms + roomState + matchStart em rajada (tudo sincrono dentro
+    // do handler), entao registrar depois de esperar o hello isolado correria
+    // o risco de perder os eventos seguintes.
+    const resumed = await connectTransportWithCookie(h, dono.cookie);
+    const helloOk = waitFor<{ ok: boolean; reason?: string }>(resumed, 'hello');
+    const roomAfter = waitFor<RoomState>(resumed, 'roomState');
+    const matchAfter = waitFor<MatchStart>(resumed, 'matchStart');
+    resumed.emit('hello', { engineVersion: ENGINE_VERSION });
+    assert.equal((await helloOk).ok, true, 'hello de reconexao precisa ser aceito');
+
+    assert.ok((await roomAfter).players.some((p) => p.id === dono.playerId), 'precisa continuar na sala');
+    const catchUp = await matchAfter;
+    const me = catchUp.players.find((p) => p.id === dono.playerId);
+    assert.ok(me, 'a partida precisa mandar o catch-up de volta pro jogador que reconectou');
+    assert.ok(me!.hp > 0, 'reconectar a tempo nao pode ter eliminado o jogador');
+  } finally {
+    await stopServer(h);
+  }
+});
+
+test('cai a conexao e NAO reconecta a tempo -- e removido de vez, igual a uma desistencia', async () => {
+  const h = await startServer(150); // janela bem curta de proposito
+  try {
+    const dono = await connectAndGetId(h, 'VaiSumir');
+    const fiel = await connect(h, 'Fiel');
+
+    const created = waitFor<RoomState>(dono.sock, 'roomState');
+    dono.sock.emit('roomCreate', { name: 'VaiSumir', mapId: 'fabrica' });
+    const room = await created;
+
+    const joined = waitFor<RoomState>(dono.sock, 'roomState');
+    fiel.emit('roomJoin', { roomId: room.id });
+    await joined;
+
+    const started = waitFor<MatchStart>(fiel, 'matchStart');
+    dono.sock.emit('roomStart');
+    await started;
+
+    dono.sock.disconnect();
+    // Bem mais que a janela de 150ms — da tempo do timer de remocao estourar.
+    await new Promise((r) => setTimeout(r, 600));
+
+    const state = h.rooms.getRoomState(room.id);
+    assert.ok(state, 'a sala precisa continuar existindo (ainda tem o Fiel dentro)');
+    assert.ok(
+      !state!.players.some((p) => p.id === dono.playerId),
+      'depois da janela estourar sem reconectar, o jogador precisa ter sido removido de vez -- igual a uma desistencia',
+    );
+  } finally {
+    await stopServer(h);
+  }
+});
+
+test('sair da sala explicitamente NAO espera a janela de reconexao -- remove na hora', async () => {
+  const h = await startServer(60_000); // janela bem longa: se caisse nela, o teste travaria
+  try {
+    const dono = await connectAndGetId(h, 'SaiDeProposito');
+
+    const created = waitFor<RoomState>(dono.sock, 'roomState');
+    dono.sock.emit('roomCreate', { name: 'SaiDeProposito', mapId: 'fabrica' });
+    await created;
+
+    const left = waitFor<RoomState | null>(dono.sock, 'roomState');
+    dono.sock.emit('roomLeave');
+    assert.equal(await left, null);
+
+    // Reconectar (mesmo cookie) sem ter passado por nenhuma janela de espera
+    // precisa cair direto no lobby, sem sala nenhuma — a saida foi definitiva.
+    const resumed = await reconnectWithCookie(h, dono.cookie);
+    const rooms = await new Promise<{ name: string }[]>((resolve) => {
+      resumed.once('rooms', resolve);
+      resumed.emit('roomList');
+    });
+    assert.ok(!rooms.some((r) => r.name === 'SaiDeProposito'), 'sala ja devia ter sumido (dono saiu e ela ficou vazia)');
+  } finally {
+    await stopServer(h);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Validacao de payload (zod) -- entrada malformada nao pode derrubar o socket
+// ---------------------------------------------------------------------------
+
+test('aim malformado nao derruba a conexao nem trava o servidor', async () => {
+  const h = await startServer();
+  try {
+    const dono = await connect(h, 'Bagunceiro');
+    const created = waitFor<RoomState>(dono, 'roomState');
+    dono.emit('roomCreate', { name: 'Caos', mapId: 'fabrica' });
+    await created;
+    dono.emit('roomAddDummy');
+
+    const started = waitFor<MatchStart>(dono, 'matchStart');
+    dono.emit('roomStart');
+    await started;
+
+    // Payloads claramente fora do formato esperado.
+    dono.emit('aim', { angle: 'noventa', power: null, weaponId: 42, fire: 'sim' } as never);
+    dono.emit('aim', null as never);
+    dono.emit('input', { seq: 'um', left: 'talvez' } as never);
+
+    // O socket precisa continuar vivo e respondendo depois do lixo.
+    const stillWorks = waitFor<string[]>(dono, 'rooms');
+    dono.emit('roomList');
+    await stillWorks;
   } finally {
     await stopServer(h);
   }

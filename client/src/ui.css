@@ -411,6 +411,36 @@ button.ghost:active:not(:disabled) {
 }
 
 /* ------------------------------------------------------------------ */
+/* Aviso de reconexao — some/aparece por cima de qualquer tela          */
+/* ------------------------------------------------------------------ */
+
+#connBanner {
+  position: fixed;
+  top: 16px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 70;
+  background: rgba(19, 8, 2, 0.92);
+  border: 2px solid var(--red);
+  border-radius: 8px;
+  padding: 8px 18px;
+  font-size: 0.85rem;
+  color: var(--cream);
+  pointer-events: none;
+  animation: conn-pulse 1.4s ease-in-out infinite;
+}
+
+/* `.hidden` sozinha so tem efeito em #overlay -- precisa da regra propria aqui tambem. */
+#connBanner.hidden {
+  display: none;
+}
+
+@keyframes conn-pulse {
+  0%, 100% { opacity: 0.75; }
+  50% { opacity: 1; }
+}
+
+/* ------------------------------------------------------------------ */
 /* Menu de volume da musica — funciona na sala e na partida            */
 /* ------------------------------------------------------------------ */
 

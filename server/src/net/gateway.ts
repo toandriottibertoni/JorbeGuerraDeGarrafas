@@ -10,6 +10,16 @@ import {
 } from '@jorbe/shared';
 import { verifyAccessToken, type AccessTokenPayload } from '../auth/tokens.js';
 import { RoomManager, type Emitter } from '../match/RoomManager.js';
+import {
+  aimSchema,
+  chatSchema,
+  helloSchema,
+  inputSchema,
+  roomCreateSchema,
+  roomJoinSchema,
+  roomRemoveDummySchema,
+  roomSetMapSchema,
+} from './validation.js';
 
 type Sock = Socket<ClientToServerEvents, ServerToClientEvents>;
 
@@ -47,7 +57,7 @@ function identityFromSocket(socket: Sock): AccessTokenPayload | null {
   return verifyAccessToken(token);
 }
 
-export function createGateway(io: Server): RoomManager {
+export function createGateway(io: Server, reconnectGraceMs?: number): RoomManager {
   const emitter: Emitter = {
     toRoom: (roomId, event, payload) => {
       io.to(`room:${roomId}`).emit(event as string, payload);
@@ -64,93 +74,145 @@ export function createGateway(io: Server): RoomManager {
     },
   };
 
-  const rooms = new RoomManager(emitter);
+  const rooms = new RoomManager(emitter, reconnectGraceMs);
   rooms.start();
 
   io.on('connection', (socket: Sock) => {
     let authed = false;
+    // Id ESTAVEL do jogador (o `sub` do token, nao o `socket.id` da conexao
+    // de transporte) -- sobrevive a queda e reconexao da rede, o que socket.id
+    // nunca faria. `RoomManager`/`MatchEngine` inteiros sao indexados por
+    // isso, entao uma reconexao dentro da janela de tolerancia (ver
+    // `RoomManager.scheduleDisconnect`) simplesmente "continua de onde parou"
+    // sem precisar renomear nada.
+    let playerId = '';
 
-    socket.on('hello', (req: HelloRequest) => {
-      if (req?.engineVersion !== ENGINE_VERSION) {
-        socket.emit('hello', {
-          ok: false,
-          playerId: '',
-          nick: '',
-          engineVersion: ENGINE_VERSION,
-          reason: 'Versao do jogo desatualizada — recarregue a pagina.',
-        });
-        socket.disconnect(true);
-        return;
+    /** Blindagem contra payload malformado ou bug no handler: nunca deixa a excecao subir e derrubar a conexao (ou o processo) de todo mundo na sala. */
+    const safely = (fn: () => void): void => {
+      try {
+        fn();
+      } catch (err) {
+        console.error('[gateway] erro tratando evento de socket:', err);
+        socket.emit('errorMsg', 'Erro interno — tente de novo.');
       }
+    };
 
-      const identity = identityFromSocket(socket);
-      if (!identity) {
+    socket.on('hello', (req: HelloRequest) =>
+      safely(() => {
+        const parsed = helloSchema.safeParse(req);
+        if (!parsed.success || parsed.data.engineVersion !== ENGINE_VERSION) {
+          socket.emit('hello', {
+            ok: false,
+            playerId: '',
+            nick: '',
+            engineVersion: ENGINE_VERSION,
+            reason: 'Versao do jogo desatualizada — recarregue a pagina.',
+          });
+          socket.disconnect(true);
+          return;
+        }
+
+        const identity = identityFromSocket(socket);
+        if (!identity) {
+          socket.emit('hello', {
+            ok: false,
+            playerId: '',
+            nick: '',
+            engineVersion: ENGINE_VERSION,
+            reason: 'Faca login antes de entrar.',
+          });
+          socket.disconnect(true);
+          return;
+        }
+
+        playerId = identity.sub;
+        authed = true;
+        // Sala pessoal nomeada com o id estavel -- e o que faz `toClient`
+        // (io.to(playerId)) alcancar este socket mesmo depois de uma
+        // reconexao trocar o `socket.id` por baixo dos panos.
+        void socket.join(playerId);
+
+        const reconnected = rooms.cancelPendingDisconnect(playerId);
+        if (!reconnected) {
+          rooms.addClient(playerId, identity.nick, {
+            isGuest: identity.guest,
+            userId: identity.guest ? null : identity.sub,
+          });
+        }
+
         socket.emit('hello', {
-          ok: false,
-          playerId: '',
-          nick: '',
+          ok: true,
+          playerId,
+          nick: identity.nick,
           engineVersion: ENGINE_VERSION,
-          reason: 'Faca login antes de entrar.',
         });
-        socket.disconnect(true);
-        return;
-      }
+        socket.emit('rooms', rooms.listRooms());
 
-      rooms.addClient(socket.id, identity.nick, {
-        isGuest: identity.guest,
-        userId: identity.guest ? null : identity.sub,
-      });
-      authed = true;
-
-      socket.emit('hello', {
-        ok: true,
-        playerId: socket.id,
-        nick: identity.nick,
-        engineVersion: ENGINE_VERSION,
-      });
-      socket.emit('rooms', rooms.listRooms());
-    });
+        // Reencaixa o socket novo na sala/partida que ja estava rolando (se
+        // a janela de reconexao ainda tiver essa vaga guardada) e manda o
+        // estado atual pra tela voltar sozinha, sem o jogador precisar fazer
+        // nada. SEMPRE manda `roomState` aqui (mesmo null) — se a janela
+        // estourou antes de reconectar, o cliente pode estar com uma sala
+        // "fantasma" guardada de antes da queda, e so um roomState explicito
+        // (nem que seja null) corrige a tela.
+        const room = rooms.roomOf(playerId);
+        if (room) void socket.join(`room:${room.id}`);
+        socket.emit('roomState', room ? rooms.getRoomState(room.id) : null);
+        if (room) {
+          const engine = rooms.engineOf(playerId);
+          if (engine) socket.emit('matchStart', engine.catchUp());
+        }
+      }),
+    );
 
     const guard = (fn: () => void): void => {
       if (!authed) {
         socket.emit('errorMsg', 'Conecte-se antes.');
         return;
       }
-      fn();
+      safely(fn);
     };
 
     socket.on('roomList', () => guard(() => socket.emit('rooms', rooms.listRooms())));
 
     socket.on('roomCreate', (req) =>
       guard(() => {
-        const id = rooms.createRoom(socket.id, sanitizeText(req?.name, 28), req?.mapId ?? 'fabrica');
+        const parsed = roomCreateSchema.safeParse(req);
+        const name = sanitizeText(parsed.success ? parsed.data.name : '', 28);
+        const mapId = parsed.success ? parsed.data.mapId : 'fabrica';
+        const id = rooms.createRoom(playerId, name, mapId);
         if (!id) return;
-        socket.join(`room:${id}`);
+        void socket.join(`room:${id}`);
         socket.emit('roomState', rooms.getRoomState(id));
       }),
     );
 
     socket.on('roomJoin', (req) =>
       guard(() => {
-        const err = rooms.joinRoom(socket.id, String(req?.roomId ?? ''));
+        const parsed = roomJoinSchema.safeParse(req);
+        if (!parsed.success) {
+          socket.emit('errorMsg', 'Sala invalida.');
+          return;
+        }
+        const err = rooms.joinRoom(playerId, parsed.data.roomId);
         if (err) {
           socket.emit('errorMsg', err);
           return;
         }
-        socket.join(`room:${req.roomId}`);
-        socket.emit('roomState', rooms.getRoomState(req.roomId));
+        void socket.join(`room:${parsed.data.roomId}`);
+        socket.emit('roomState', rooms.getRoomState(parsed.data.roomId));
 
         // Entrou com a partida rolando: manda o mundo atual pra assistir.
-        const engine = rooms.engineOf(socket.id);
+        const engine = rooms.engineOf(playerId);
         if (engine) socket.emit('matchStart', engine.catchUp());
       }),
     );
 
     socket.on('roomLeave', () =>
       guard(() => {
-        const room = rooms.roomOf(socket.id);
-        rooms.leaveRoom(socket.id);
-        if (room) socket.leave(`room:${room.id}`);
+        const room = rooms.roomOf(playerId);
+        rooms.leaveRoom(playerId);
+        if (room) void socket.leave(`room:${room.id}`);
         socket.emit('roomState', null);
         socket.emit('rooms', rooms.listRooms());
       }),
@@ -158,43 +220,54 @@ export function createGateway(io: Server): RoomManager {
 
     socket.on('roomAddDummy', () =>
       guard(() => {
-        const err = rooms.addDummy(socket.id);
+        const err = rooms.addDummy(playerId);
         if (err) socket.emit('errorMsg', err);
       }),
     );
 
     socket.on('roomRemoveDummy', (req) =>
       guard(() => {
-        const err = rooms.removeDummy(socket.id, String(req?.dummyId ?? ''));
+        const parsed = roomRemoveDummySchema.safeParse(req);
+        if (!parsed.success) {
+          socket.emit('errorMsg', 'Jorbot invalido.');
+          return;
+        }
+        const err = rooms.removeDummy(playerId, parsed.data.dummyId);
         if (err) socket.emit('errorMsg', err);
       }),
     );
 
     socket.on('roomSetMap', (req) =>
       guard(() => {
-        const err = rooms.setMap(socket.id, String(req?.mapId ?? ''));
+        const parsed = roomSetMapSchema.safeParse(req);
+        if (!parsed.success) {
+          socket.emit('errorMsg', 'Mapa invalido.');
+          return;
+        }
+        const err = rooms.setMap(playerId, parsed.data.mapId);
         if (err) socket.emit('errorMsg', err);
       }),
     );
 
     socket.on('roomStart', () =>
       guard(() => {
-        const err = rooms.startMatch(socket.id);
+        const err = rooms.startMatch(playerId);
         if (err) socket.emit('errorMsg', err);
       }),
     );
 
     socket.on('chat', (req) =>
       guard(() => {
-        const room = rooms.roomOf(socket.id);
-        const text = sanitizeText(req?.text, 160);
+        const parsed = chatSchema.safeParse(req);
+        const room = rooms.roomOf(playerId);
+        const text = sanitizeText(parsed.success ? parsed.data.text : '', 160);
         if (!room || !text) return;
-        if (!rooms.allowChat(socket.id)) {
+        if (!rooms.allowChat(playerId)) {
           socket.emit('errorMsg', 'Calma no chat.');
           return;
         }
         io.to(`room:${room.id}`).emit('chat', {
-          from: rooms.getClient(socket.id)?.nick ?? '???',
+          from: rooms.getClient(playerId)?.nick ?? '???',
           text,
           at: Date.now(),
         });
@@ -203,18 +276,27 @@ export function createGateway(io: Server): RoomManager {
 
     socket.on('input', (msg: InputMessage) =>
       guard(() => {
-        rooms.engineOf(socket.id)?.applyInput(socket.id, msg);
+        const parsed = inputSchema.safeParse(msg);
+        if (!parsed.success) return;
+        rooms.engineOf(playerId)?.applyInput(playerId, parsed.data);
       }),
     );
 
     socket.on('aim', (msg: AimMessage) =>
       guard(() => {
-        rooms.engineOf(socket.id)?.applyAim(socket.id, msg);
+        const parsed = aimSchema.safeParse(msg);
+        if (!parsed.success) return;
+        rooms.engineOf(playerId)?.applyAim(playerId, parsed.data);
       }),
     );
 
     socket.on('disconnect', () => {
-      rooms.removeClient(socket.id);
+      if (!authed) return;
+      // Nao remove na hora: uma queda de rede passageira nao pode custar a
+      // vaga na partida. `scheduleDisconnect` da uma janela de tolerancia —
+      // se um novo socket mandar hello com a MESMA identidade antes dela
+      // acabar (ver acima), o cancelamento devolve tudo como estava.
+      rooms.scheduleDisconnect(playerId);
     });
   });
 
