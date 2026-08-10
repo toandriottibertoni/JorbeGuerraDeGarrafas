@@ -101,6 +101,35 @@ export function playFantastic(): void {
   void a.play().catch(() => {});
 }
 
+/** Jingles de multi-kill -- toca uma vez quando alguem derruba varios adversarios na mesma rodada. */
+export function playDoubleKill(): void {
+  if (muted) return;
+  const a = new Audio('/audio/double-kill.mp3');
+  a.volume = volume;
+  void a.play().catch(() => {});
+}
+
+export function playTripleKill(): void {
+  if (muted) return;
+  const a = new Audio('/audio/triple-kill.mp3');
+  a.volume = volume;
+  void a.play().catch(() => {});
+}
+
+export function playQuadraKill(): void {
+  if (muted) return;
+  const a = new Audio('/audio/quadra-kill.mp3');
+  a.volume = volume;
+  void a.play().catch(() => {});
+}
+
+export function playLegendaryKill(): void {
+  if (muted) return;
+  const a = new Audio('/audio/legendary-kill.mp3');
+  a.volume = volume;
+  void a.play().catch(() => {});
+}
+
 export function setVolume(v: number): void {
   volume = Math.min(1, Math.max(0, v));
   applyBgVolume();

@@ -134,6 +134,12 @@ export interface ResolutionPlan {
    * o banner, nao so quem atirou.
    */
   fantasticShots: { playerId: string }[];
+  /**
+   * Quem matou 2+ adversarios NESTA rodada (racimo/vortice/etc podem pegar
+   * varios no mesmo tiro) e quantos -- broadcast pra sala inteira ver o
+   * banner de double/triple/quadra/legendary kill.
+   */
+  multiKills: { playerId: string; kills: number }[];
 }
 
 export interface RoundEnd {

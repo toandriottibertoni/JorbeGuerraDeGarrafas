@@ -745,6 +745,29 @@ export class MatchEngine {
     }
     const fantasticShots = [...fantasticOwners].map((playerId) => ({ playerId }));
 
+    // Multi-kill: quantos adversarios DIFERENTES cada atirador derrubou
+    // nesta rodada -- racimo/vortice/etc podem acertar (e matar) mais de um
+    // no mesmo tiro. Mesmo criterio de causa 'blast' + dono do tiro em voga
+    // que credita abates no placar (attributeStats), so que aqui e por
+    // rodada, nao cumulativo.
+    const shotOwnerForKills = new Map<number, string>();
+    for (const s of r.shots) shotOwnerForKills.set(s.id, s.ownerId);
+    const killCounts = new Map<string, number>();
+    {
+      let lastOwner: string | null = null;
+      for (const e of r.events) {
+        if (e.kind === 'explosion') {
+          lastOwner = shotOwnerForKills.get(e.shotId) ?? null;
+          continue;
+        }
+        if (!lastOwner || e.kind !== 'death' || e.cause !== 'blast' || e.playerId === lastOwner) continue;
+        killCounts.set(lastOwner, (killCounts.get(lastOwner) ?? 0) + 1);
+      }
+    }
+    const multiKills = [...killCounts.entries()]
+      .filter(([, kills]) => kills >= 2)
+      .map(([playerId, kills]) => ({ playerId, kills }));
+
     const plan: ResolutionPlan = {
       round: this.round,
       wind: this.wind,
@@ -764,6 +787,7 @@ export class MatchEngine {
       })),
       shielded: r.shielded,
       fantasticShots,
+      multiKills,
     };
 
     // O cliente reproduz o plano em tempo real; damos meio segundo de folga

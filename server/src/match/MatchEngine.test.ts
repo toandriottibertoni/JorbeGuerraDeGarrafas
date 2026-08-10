@@ -582,6 +582,79 @@ test('angulo de tiro fantastico mas forca fraca que acerta nao conta como fantas
 });
 
 // ---------------------------------------------------------------------------
+// Multi-kill
+// ---------------------------------------------------------------------------
+
+test('um tiro que mata dois adversarios de uma vez conta como double kill', () => {
+  const { engine, sink } = makeMatch(3);
+  engine.start();
+  poke(engine).wind = 0;
+
+  const p0 = poke(engine).players.get('p0');
+  const p1 = poke(engine).players.get('p1');
+  const p2 = poke(engine).players.get('p2');
+  p0.ammo.nuke = 1; // nuke e dropOnly (ammo 0 por padrao) -- concede uma carga pro teste.
+  p1.char.x = p0.char.x + 20;
+  p1.char.y = p0.char.y;
+  p1.char.hp = 10;
+  p2.char.x = p0.char.x - 20;
+  p2.char.y = p0.char.y;
+  p2.char.hp = 10;
+
+  engine.applyAim('p0', { angle: 90, power: 95, weaponId: 'nuke', fire: true });
+  advance(engine, 31);
+
+  const plan = (sink.eventsOf('roundResolve') as ResolutionPlan[])[0];
+  assert.ok(plan, 'a rodada precisa ter resolvido');
+  assert.deepEqual(
+    plan.multiKills,
+    [{ playerId: 'p0', kills: 2 }],
+    `esperava p0 com 2 abates, veio ${JSON.stringify(plan.multiKills)}`,
+  );
+});
+
+test('matar so um adversario nao conta como multi-kill', () => {
+  const { engine, sink } = makeMatch(2);
+  engine.start();
+  poke(engine).wind = 0;
+
+  const p0 = poke(engine).players.get('p0');
+  const p1 = poke(engine).players.get('p1');
+  p0.ammo.nuke = 1;
+  p1.char.x = p0.char.x + 20;
+  p1.char.y = p0.char.y;
+  p1.char.hp = 10;
+
+  engine.applyAim('p0', { angle: 90, power: 95, weaponId: 'nuke', fire: true });
+  advance(engine, 31);
+
+  const plan = (sink.eventsOf('roundResolve') as ResolutionPlan[])[0];
+  assert.equal(plan.multiKills.length, 0, 'um unico abate nao pode contar como multi-kill');
+});
+
+test('se explodir a si mesmo junto, o suicidio nao entra na contagem de multi-kill', () => {
+  const { engine, sink } = makeMatch(3);
+  engine.start();
+  poke(engine).wind = 0;
+
+  const p0 = poke(engine).players.get('p0');
+  const p1 = poke(engine).players.get('p1');
+  const p2 = poke(engine).players.get('p2');
+  p0.ammo.nuke = 1;
+  p0.char.hp = 10; // o proprio atirador tambem morre na explosao.
+  p1.char.x = p0.char.x + 20;
+  p1.char.y = p0.char.y;
+  p1.char.hp = 10;
+  p2.char.x += 1500; // longe do raio -- so serve pra sobrar alguem vivo no fim da partida.
+
+  engine.applyAim('p0', { angle: 90, power: 95, weaponId: 'nuke', fire: true });
+  advance(engine, 31);
+
+  const plan = (sink.eventsOf('roundResolve') as ResolutionPlan[])[0];
+  assert.equal(plan.multiKills.length, 0, 'matar so um adversario (e a si mesmo) nao pode contar como multi-kill');
+});
+
+// ---------------------------------------------------------------------------
 // Engradados
 // ---------------------------------------------------------------------------
 
@@ -946,7 +1019,17 @@ test('bot respeita municao limitada — nunca atira arma que nao tem mais', () =
 /** Plano sintetico: testar attributeStats isolado da fisica real e muito mais
  *  confiavel do que procurar uma seed que por acaso acerta um tiro em alguem. */
 function fakePlan(shots: ResolutionPlan['shots'], events: ResolutionPlan['events']): ResolutionPlan {
-  return { round: 1, wind: 0, shots, events, totalTicks: 10, finalStates: [], shielded: [], fantasticShots: [] };
+  return {
+    round: 1,
+    wind: 0,
+    shots,
+    events,
+    totalTicks: 10,
+    finalStates: [],
+    shielded: [],
+    fantasticShots: [],
+    multiKills: [],
+  };
 }
 
 test('dano de explosao e creditado a quem atirou', () => {

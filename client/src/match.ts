@@ -245,6 +245,10 @@ export class MatchScene {
   /** "Tiro fantastico" — banner enorme e proprio, maior peso que o banner normal. */
   private fantasticText = '';
   private fantasticUntil = 0;
+  /** Multi-kill (double/triple/quadra/legendary) — mesmo peso visual do banner de tiro fantastico. */
+  private multiKillNick = '';
+  private multiKillLabel = '';
+  private multiKillUntil = 0;
   private finalResult: MatchEnd | null = null;
   private lastFrame = 0;
   private clock = 0;
@@ -1213,6 +1217,12 @@ export class MatchScene {
         const nicks = pb.plan.fantasticShots.map((f) => this.players.get(f.playerId)?.nick ?? '???').join(' e ');
         this.triggerFantasticShot(nicks);
       }
+      if (pb.plan.multiKills.length > 0) {
+        // Raro dois jogadores fecharem multi-kill na mesma rodada -- so um
+        // banner por vez, mostra o de mais abates (o mais impressionante).
+        const best = [...pb.plan.multiKills].sort((a, b) => b.kills - a.kills)[0]!;
+        this.triggerMultiKill(this.players.get(best.playerId)?.nick ?? '???', best.kills);
+      }
       this.playback = null;
       this.phase = 'interval';
     }
@@ -1224,6 +1234,19 @@ export class MatchScene {
     this.fantasticUntil = this.clock + 3.2;
     this.cam.addTrauma(0.6);
     music.playFantastic();
+  }
+
+  /** Dispara o banner enorme + som de double/triple/quadra/legendary kill pra sala inteira ver. */
+  private triggerMultiKill(nick: string, kills: number): void {
+    this.multiKillNick = nick;
+    this.multiKillLabel =
+      kills >= 5 ? 'LEGENDARY' : kills === 4 ? 'QUADRA KILL' : kills === 3 ? 'TRIPLE KILL' : 'DOUBLE KILL';
+    this.multiKillUntil = this.clock + 3.2;
+    this.cam.addTrauma(0.8);
+    if (kills >= 5) music.playLegendaryKill();
+    else if (kills === 4) music.playQuadraKill();
+    else if (kills === 3) music.playTripleKill();
+    else music.playDoubleKill();
   }
 
   private applyEvent(e: SimEvent, pb: Playback): void {
@@ -1863,6 +1886,7 @@ export class MatchScene {
     }
 
     if (this.fantasticText && this.clock < this.fantasticUntil) this.drawFantasticBanner(ctx);
+    if (this.multiKillNick && this.clock < this.multiKillUntil) this.drawMultiKillBanner(ctx);
 
     if (this.phase === 'over' && this.finalResult) this.drawResults();
   }
@@ -1934,6 +1958,49 @@ export class MatchScene {
     ctx.strokeText(this.fantasticText, cx, cy + 40);
     ctx.fillStyle = PALETTE.cream;
     ctx.fillText(this.fantasticText, cx, cy + 40);
+    ctx.textAlign = 'left';
+    ctx.restore();
+  }
+
+  /**
+   * Banner de multi-kill — o NOME de quem matou vai gigante (o que mais
+   * chama atencao), com o rotulo (DOUBLE/TRIPLE/QUADRA/LEGENDARY KILL)
+   * logo abaixo. Um pouco mais baixo na tela que o de tiro fantastico pra
+   * nao empilhar em cima se os dois acontecerem na mesma rodada.
+   */
+  private drawMultiKillBanner(ctx: CanvasRenderingContext2D): void {
+    const remaining = this.multiKillUntil - this.clock;
+    const fadeOut = remaining < 0.5 ? Math.max(0, remaining / 0.5) : 1;
+    const cx = this.cam.viewW / 2;
+    const cy = this.cam.viewH * 0.46;
+    const pulse = 1 + Math.sin(this.clock * 9) * 0.05;
+
+    ctx.save();
+    ctx.globalAlpha = fadeOut;
+    ctx.fillStyle = 'rgba(19,8,2,0.55)';
+    ctx.fillRect(0, cy - 56, this.cam.viewW, 112);
+
+    ctx.textAlign = 'center';
+    ctx.translate(cx, cy - 4);
+    ctx.scale(pulse, pulse);
+    ctx.font = 'bold 52px Georgia, serif';
+    ctx.strokeStyle = INK;
+    ctx.lineWidth = 7;
+    ctx.strokeText(this.multiKillNick, 0, 0);
+    ctx.fillStyle = PALETTE.red;
+    ctx.fillText(this.multiKillNick, 0, 0);
+    ctx.restore();
+
+    ctx.save();
+    ctx.globalAlpha = fadeOut;
+    ctx.textAlign = 'center';
+    ctx.font = 'bold 26px Georgia, serif';
+    ctx.strokeStyle = INK;
+    ctx.lineWidth = 4;
+    const label = `${this.multiKillLabel}!!!`;
+    ctx.strokeText(label, cx, cy + 40);
+    ctx.fillStyle = PALETTE.crust;
+    ctx.fillText(label, cx, cy + 40);
     ctx.textAlign = 'left';
     ctx.restore();
   }
