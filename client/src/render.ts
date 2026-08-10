@@ -270,6 +270,10 @@ export function drawSky(ctx: CanvasRenderingContext2D, cam: Camera, mapId?: stri
     drawRioSky(ctx, cam);
     return;
   }
+  if (mapId === 'maracana') {
+    drawMaracanaSky(ctx, cam);
+    return;
+  }
   drawIndustrialSky(ctx, cam);
 }
 
@@ -346,32 +350,7 @@ function drawRioSky(ctx: CanvasRenderingContext2D, cam: Camera): void {
   ctx.fill();
 
   // O Corcovado com o Cristo Redentor -- morro proprio, um pouco mais perto.
-  const corcX = parallaxX(MAP_WIDTH * 0.46, 0.22);
-  const corcBaseY = groundScreenY;
-  const hillH = 130;
-  const hillW = 220;
-  ctx.fillStyle = 'rgba(70,95,120,0.7)';
-  ctx.beginPath();
-  ctx.moveTo(corcX - hillW / 2, corcBaseY);
-  ctx.quadraticCurveTo(corcX - hillW * 0.3, corcBaseY - hillH * 0.5, corcX, corcBaseY - hillH);
-  ctx.quadraticCurveTo(corcX + hillW * 0.3, corcBaseY - hillH * 0.5, corcX + hillW / 2, corcBaseY);
-  ctx.closePath();
-  ctx.fill();
-
-  // Estatua: figura minuscula de bracos abertos no cume do morro.
-  const statueY = corcBaseY - hillH;
-  ctx.strokeStyle = 'rgba(55,75,95,0.85)';
-  ctx.lineWidth = 3;
-  ctx.beginPath();
-  ctx.moveTo(corcX, statueY);
-  ctx.lineTo(corcX, statueY - 22);
-  ctx.moveTo(corcX - 13, statueY - 15);
-  ctx.lineTo(corcX + 13, statueY - 15);
-  ctx.stroke();
-  ctx.fillStyle = 'rgba(55,75,95,0.85)';
-  ctx.beginPath();
-  ctx.arc(corcX, statueY - 26, 4, 0, Math.PI * 2);
-  ctx.fill();
+  drawCorcovado(ctx, parallaxX(MAP_WIDTH * 0.46, 0.22), groundScreenY, 'rgba(70,95,120,0.7)', 'rgba(55,75,95,0.85)');
 
   // Orla e predios distantes, mais perto ainda (parallax mais rapido) —
   // sugere Copacabana do outro lado da baia, sem tentar desenhar de verdade.
@@ -385,6 +364,141 @@ function drawRioSky(ctx: CanvasRenderingContext2D, cam: Camera): void {
   }
   ctx.fillStyle = 'rgba(235,214,170,0.55)';
   ctx.fillRect(0, groundScreenY - 6, cam.viewW, 6);
+}
+
+/** Morro com o Cristo Redentor de bracos abertos no cume -- reaproveitado no ceu do Pao de Acucar e no do Maracana. */
+function drawCorcovado(
+  ctx: CanvasRenderingContext2D,
+  x: number,
+  baseY: number,
+  hillColor: string,
+  statueColor: string,
+): void {
+  const hillH = 130;
+  const hillW = 220;
+  ctx.fillStyle = hillColor;
+  ctx.beginPath();
+  ctx.moveTo(x - hillW / 2, baseY);
+  ctx.quadraticCurveTo(x - hillW * 0.3, baseY - hillH * 0.5, x, baseY - hillH);
+  ctx.quadraticCurveTo(x + hillW * 0.3, baseY - hillH * 0.5, x + hillW / 2, baseY);
+  ctx.closePath();
+  ctx.fill();
+
+  // Estatua: figura minuscula de bracos abertos no cume do morro.
+  const statueY = baseY - hillH;
+  ctx.strokeStyle = statueColor;
+  ctx.lineWidth = 3;
+  ctx.beginPath();
+  ctx.moveTo(x, statueY);
+  ctx.lineTo(x, statueY - 22);
+  ctx.moveTo(x - 13, statueY - 15);
+  ctx.lineTo(x + 13, statueY - 15);
+  ctx.stroke();
+  ctx.fillStyle = statueColor;
+  ctx.beginPath();
+  ctx.arc(x, statueY - 26, 4, 0, Math.PI * 2);
+  ctx.fill();
+}
+
+/**
+ * Ceu noturno do Maracana: estrelas, os dois holofotes das arquibancadas
+ * (Cobertura Leste/Oeste, mesma altura que `generateMaracana` usa pro topo
+ * delas) e o Corcovado ao longe, iluminado por baixo pelo brilho do
+ * estadio -- so cenario, sem colisao nenhuma.
+ */
+function drawMaracanaSky(ctx: CanvasRenderingContext2D, cam: Camera): void {
+  const g = ctx.createLinearGradient(0, 0, 0, cam.viewH);
+  g.addColorStop(0, '#050818');
+  g.addColorStop(0.6, '#101a38');
+  g.addColorStop(1, '#22304f');
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, cam.viewW, cam.viewH);
+
+  // Estrelas -- posicao pseudo-aleatoria fixa (hash do indice), parallax quase nulo.
+  const starOff = -cam.x * 0.03;
+  ctx.fillStyle = 'rgba(244,228,193,0.65)';
+  for (let i = 0; i < 90; i++) {
+    const sx = ((i * 137 + starOff) % (cam.viewW + 100)) - 50;
+    const sy = (i * 71) % Math.floor(cam.viewH * 0.55);
+    ctx.fillRect(sx, sy, 2, 2);
+  }
+
+  const camCenterWorldX = cam.x + cam.viewW / cam.zoom / 2;
+  const parallaxX = (worldX: number, factor: number): number =>
+    cam.viewW / 2 + (worldX - camCenterWorldX) * factor;
+  const groundScreenY = (MAP_HEIGHT - cam.renderY) * cam.zoom;
+  // Mesma fracao que `generateMaracana` usa pro topo das arquibancadas --
+  // os holofotes ficam ancorados exatamente na cobertura, nao flutuando.
+  const standScreenY = groundScreenY - (MAP_HEIGHT * 0.68 - MAP_HEIGHT * 0.34) * cam.zoom;
+
+  drawCorcovado(ctx, parallaxX(MAP_WIDTH * 0.5, 0.15), groundScreenY, 'rgba(50,60,85,0.55)', 'rgba(40,48,68,0.7)');
+
+  // Holofotes -- torre + leque de luz caindo sobre a arquibancada de cada lado.
+  const drawFloodlight = (x: number, towerTopY: number): void => {
+    ctx.strokeStyle = 'rgba(20,16,10,0.8)';
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.moveTo(x, groundScreenY);
+    ctx.lineTo(x, towerTopY);
+    ctx.stroke();
+
+    const beam = ctx.createRadialGradient(x, towerTopY, 4, x, towerTopY, 260);
+    beam.addColorStop(0, 'rgba(255,250,225,0.5)');
+    beam.addColorStop(1, 'rgba(255,250,225,0)');
+    ctx.fillStyle = beam;
+    ctx.beginPath();
+    ctx.moveTo(x, towerTopY);
+    ctx.lineTo(x - 150, groundScreenY);
+    ctx.lineTo(x + 150, groundScreenY);
+    ctx.closePath();
+    ctx.fill();
+
+    ctx.fillStyle = '#fff8e0';
+    for (let r = 0; r < 3; r++) {
+      for (let c = 0; c < 4; c++) {
+        ctx.fillRect(x - 18 + c * 12, towerTopY - 18 + r * 12, 8, 8);
+      }
+    }
+  };
+  drawFloodlight(parallaxX(MAP_WIDTH * 0.06, 0.55), standScreenY - 90);
+  drawFloodlight(parallaxX(MAP_WIDTH * 0.94, 0.55), standScreenY - 90);
+}
+
+/**
+ * Placar suspenso do Maracana -- painel "MARACANA" pendurado por dois cabos
+ * entre as arquibancadas, so cenario. Desenhado em espaco de MUNDO, igual
+ * ao bondinho: quem chama precisa estar dentro do mesmo `ctx.translate` que
+ * desenha o terreno.
+ */
+export function drawScoreboard(ctx: CanvasRenderingContext2D): void {
+  const cx = MAP_WIDTH / 2;
+  const standTopY = MAP_HEIGHT * 0.34;
+  const boardY = standTopY - 130;
+  const boardW = 260;
+  const boardH = 56;
+
+  ctx.strokeStyle = 'rgba(20,16,10,0.8)';
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.moveTo(cx - boardW * 0.35, boardY - 50);
+  ctx.lineTo(cx - boardW * 0.35, boardY);
+  ctx.moveTo(cx + boardW * 0.35, boardY - 50);
+  ctx.lineTo(cx + boardW * 0.35, boardY);
+  ctx.stroke();
+
+  ctx.fillStyle = '#141428';
+  ctx.strokeStyle = INK;
+  ctx.lineWidth = 3;
+  ctx.beginPath();
+  ctx.roundRect(cx - boardW / 2, boardY, boardW, boardH, 6);
+  ctx.fill();
+  ctx.stroke();
+
+  ctx.textAlign = 'center';
+  ctx.fillStyle = '#f4e4c1';
+  ctx.font = 'bold 20px Georgia, serif';
+  ctx.fillText('MARACANA', cx, boardY + boardH / 2 + 7);
+  ctx.textAlign = 'left';
 }
 
 /**

@@ -39,6 +39,8 @@ export interface MapDef {
   bridge?: boolean;
   /** Duas montanhas com ilhargas em terraco sobre o mar -- ver `generateSugarloaf`. */
   twinPeaks?: boolean;
+  /** Duas arquibancadas altas com o gramado mais baixo no meio -- ver `generateMaracana`. */
+  maracana?: boolean;
 }
 
 // `relief` e em pixels absolutos — escalado junto com o corte de MAP_HEIGHT
@@ -58,6 +60,11 @@ export const MAPS: readonly MapDef[] = [
   // nivel do mar, nao a media do chao (mesmo truque de reaproveitar o campo
   // que a Ponte ja faz com o deck).
   { id: 'sugarloaf', name: 'Pao de Acucar', groundLevel: 0.68, relief: 0, caves: 0, twinPeaks: true },
+  // Duas coberturas (arquibancada leste/oeste) bem altas nas pontas, gramado
+  // baixo no meio -- ver `generateMaracana`. `groundLevel` aqui e a altura
+  // do gramado, mesmo truque de reaproveitar o campo que os outros mapas
+  // customizados ja fazem.
+  { id: 'maracana', name: 'Maracana', groundLevel: 0.68, relief: 0, caves: 0, maracana: true },
 ];
 
 export function getMap(id: string): MapDef {
@@ -94,6 +101,10 @@ export class Terrain {
     }
     if (def.twinPeaks) {
       generateSugarloaf(t, def);
+      return t;
+    }
+    if (def.maracana) {
+      generateMaracana(t, def);
       return t;
     }
 
@@ -340,6 +351,53 @@ function generateSugarloaf(t: Terrain, def: MapDef): void {
         data[idx] = Mat.LIQUID;
       }
       // Acima da superficie e abaixo da agua (fora da montanha): ar, ceu aberto.
+    }
+  }
+}
+
+/**
+ * Maracana: duas coberturas (arquibancada) bem altas nas pontas do mapa, com
+ * o gramado bem mais baixo no meio -- ligacao entre os dois niveis em
+ * "degraus" (fileiras de arquibancada) em vez de um paredao reto. Sem
+ * trigonometria de proposito (mesma convencao da `generateBridge`).
+ */
+function generateMaracana(t: Terrain, def: MapDef): void {
+  const { width, height, data } = t;
+  const floorY = height - 24;
+  const standTopY = height * 0.34;
+  const pitchY = height * def.groundLevel;
+  const standInnerL = width * 0.3;
+  const standInnerR = width * 0.7;
+  const steps = 3;
+  const stepWidth = 30;
+  const zoneW = steps * stepWidth;
+  const delta = (pitchY - standTopY) / steps;
+
+  const surfaceAt = (x: number): number => {
+    if (x < standInnerL) {
+      const d = standInnerL - x;
+      if (d >= zoneW) return standTopY;
+      const rowIdx = Math.min(steps - 1, Math.floor((zoneW - d) / stepWidth));
+      return standTopY + (rowIdx + 1) * delta;
+    }
+    if (x > standInnerR) {
+      const d = x - standInnerR;
+      if (d >= zoneW) return standTopY;
+      const rowIdx = Math.min(steps - 1, Math.floor((zoneW - d) / stepWidth));
+      return standTopY + (rowIdx + 1) * delta;
+    }
+    return pitchY;
+  };
+
+  for (let x = 0; x < width; x++) {
+    const surface = Math.floor(surfaceAt(x));
+    for (let y = 0; y < height; y++) {
+      const idx = y * width + x;
+      if (y >= floorY) {
+        data[idx] = Mat.ROCK;
+      } else if (y >= surface) {
+        data[idx] = Mat.DIRT;
+      }
     }
   }
 }

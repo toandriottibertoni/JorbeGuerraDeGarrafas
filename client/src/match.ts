@@ -46,6 +46,7 @@ import {
   drawFilmOverlay,
   drawJorbe,
   drawMinimap,
+  drawScoreboard,
   drawShieldAura,
   drawSky,
   drawWeaponIcon,
@@ -1430,6 +1431,7 @@ export class MatchScene {
 
     ctx.drawImage(this.terrainRenderer.canvas, 0, 0);
     if (this.mapId === 'sugarloaf') drawCableCar(ctx, this.clock);
+    if (this.mapId === 'maracana') drawScoreboard(ctx);
 
     if (this.lastShotTrail && this.phase === 'prep') {
       ctx.save();

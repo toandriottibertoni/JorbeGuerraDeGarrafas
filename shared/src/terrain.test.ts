@@ -176,6 +176,48 @@ test('pao de acucar: os jogadores nascem em alturas bem diferentes (terracos)', 
   }
 });
 
+test('maracana: gramado baixo no meio, coberturas altas nas pontas', () => {
+  const t = Terrain.generate('maracana', 5);
+  const midX = Math.floor(MAP_WIDTH / 2);
+  const edgeX = 40;
+
+  const pitchY = t.groundBelow(midX, 0);
+  const standY = t.groundBelow(edgeX, 0);
+  assert.ok(pitchY < MAP_HEIGHT - 24, 'gramado precisa ter chao antes do piso de rocha');
+  assert.ok(standY < MAP_HEIGHT - 24, 'cobertura precisa ter chao antes do piso de rocha');
+  assert.ok(
+    standY < pitchY,
+    `gramado (y=${pitchY}) deveria ser mais BAIXO na tela (y maior) que a cobertura (y=${standY})`,
+  );
+  assert.ok(pitchY - standY > 150, 'diferenca de altura entre gramado e cobertura deveria ser bem grande');
+
+  assert.equal(t.at(midX, MAP_HEIGHT - 5), Mat.ROCK, 'fundo deve ser rocha');
+});
+
+test('maracana: os jogadores nascem em pelo menos dois niveis de altura', () => {
+  const t = Terrain.generate('maracana', 5);
+  const spawns = pickSpawns(t, 12, 5);
+  assert.ok(spawns.length >= 8, 'precisa caber varios jogadores no gramado e nas coberturas');
+
+  const ys = spawns.map((s) => s.y);
+  const spread = Math.max(...ys) - Math.min(...ys);
+  assert.ok(
+    spread > 150,
+    `gramado x cobertura deveria espalhar spawns em alturas bem diferentes, veio spread=${spread}`,
+  );
+
+  const half = Math.floor(JORBE_WIDTH / 2);
+  for (const s of spawns) {
+    let foundGroundNearby = false;
+    for (let dx = -half; dx <= half; dx++) {
+      const x = Math.max(0, Math.min(MAP_WIDTH - 1, s.x + dx));
+      assert.equal(t.isSolid(x, s.y), false, `corpo do spawn deveria estar livre em x=${x}`);
+      if (t.isSolid(x, s.y + 2)) foundGroundNearby = true;
+    }
+    assert.ok(foundGroundNearby, `deveria haver chao proximo sob o spawn em x=${s.x}`);
+  }
+});
+
 test('carve na ponte nao apaga o rio (agua nao vira ar)', () => {
   const t = Terrain.generate('ponte', 21);
   const midX = Math.floor(MAP_WIDTH / 2);
