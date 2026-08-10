@@ -3,9 +3,11 @@ import { fileURLToPath } from 'node:url';
 import { config } from 'dotenv';
 
 // npm workspaces roda este script com cwd = server/, entao o dotenv precisa
-// ser apontado explicitamente para o .env na raiz do monorepo.
+// ser apontado explicitamente para o .env na raiz do monorepo. `override:
+// true` pra garantir que o .env manda mesmo se alguma ferramenta externa (ex:
+// preview de dev tools) ja tiver injetado um PORT no ambiente antes.
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-config({ path: path.resolve(__dirname, '../../.env') });
+config({ path: path.resolve(__dirname, '../../.env'), override: true });
 
 function optional(name: string, fallback: string): string {
   const v = process.env[name];
