@@ -15,6 +15,7 @@ import {
   Terrain,
   WEAPONS,
   WIND_MAX,
+  feetInLiquid,
   getWeapon,
   stepCharacter,
   type CharState,
@@ -95,6 +96,12 @@ interface RemotePlayer extends CharState {
   targetX: number;
   targetY: number;
   rig: AnimRig;
+  /**
+   * Relogio (this.clock) de quando afogou, ou null se nunca afogou. Sem
+   * isso o corpo ficava parado em pe dentro d'agua pro resto da partida —
+   * afunda e some da tela depois de MatchScene.SUBMERGE_DURATION segundos.
+   */
+  submergedAt: number | null;
 }
 
 interface PlaybackProjectile {
@@ -120,6 +127,8 @@ interface Playback {
   selfTrail: { x: number; y: number }[];
 }
 
+/** Quanto tempo o corpo leva pra afundar de vez (e sumir do desenho) depois de afogar. */
+const SUBMERGE_DURATION = 1.4;
 const CHARGE_PER_SECOND = 70;
 const ANGLE_PER_SECOND = 55;
 const WALK_CYCLE_SPEED = 9;
@@ -452,6 +461,7 @@ export class MatchScene {
         fuel: JORBE_FUEL_PER_ROUND,
         shielded: false,
         rig: freshRig(p.hp, p.id),
+        submergedAt: null,
       });
     }
 
@@ -554,8 +564,21 @@ export class MatchScene {
       if (!p) continue;
       this.applyDamageFeedback(p, sp.hp);
       p.hp = sp.hp;
+      const justDied = p.alive && !sp.alive;
       p.alive = sp.alive;
       p.facing = sp.facing;
+
+      if (justDied) {
+        // Morte em tempo real (andar pra fora do mapa ou pro rio durante o
+        // preparo) nao passa pelo stream de SimEvent da resolucao -- sem
+        // isso o corpo so ficava parado em pe, sem nenhum feedback. Encaixa
+        // na posicao de verdade do servidor antes do efeito: pra um jogador
+        // remoto ainda nao foi interpolado ate ali (so `targetX/Y` seriam
+        // atualizados mais abaixo), e o afogamento precisa da posicao exata.
+        p.x = sp.x;
+        p.y = sp.y;
+        this.triggerDeathVisuals(p, this.terrain ? feetInLiquid(this.terrain, p) : false);
+      }
 
       // So conta como "pouso" com queda de verdade — chao irregular faz o
       // onGround piscar false/true a cada solavanco de andar, e sem esse
@@ -1249,6 +1272,29 @@ export class MatchScene {
     else music.playDoubleKill();
   }
 
+  /**
+   * Efeito de morte (particulas + som + texto flutuante), compartilhado
+   * entre a morte via SimEvent da resolucao (tiro) e a deteccao de transicao
+   * viva->morta no snapshot em tempo real (andar pra fora do mapa ou pro
+   * rio durante o preparo, fora do stream de eventos da resolucao).
+   */
+  private triggerDeathVisuals(p: RemotePlayer, drowned: boolean): void {
+    if (drowned) {
+      // Cair no rio (mapa da ponte) e um afogamento, nao uma explosao —
+      // chapinho azul n'agua em vez do estilhaco de vidro de sempre.
+      this.floatingTexts.spawn(p.x, p.y - JORBE_HEIGHT - 10, 'AFOGOU!', PALETTE.water);
+      this.particles.burst(p.x, p.y, 26, PALETTE.water);
+      this.particles.flash(p.x, p.y, 20);
+      sfx.sfxSplash();
+      // Sem isso o corpo ficava parado em pe dentro d'agua pro resto da
+      // partida -- marca o instante pra afundar e sumir aos poucos.
+      p.submergedAt = this.clock;
+    } else {
+      this.particles.burst(p.x, p.y - JORBE_HEIGHT / 2, 30, PALETTE.bottle);
+      sfx.sfxDeath();
+    }
+  }
+
   private applyEvent(e: SimEvent, pb: Playback): void {
     const t = this.terrain;
     if (!t) return;
@@ -1299,17 +1345,7 @@ export class MatchScene {
         if (p) {
           p.alive = false;
           p.hp = 0;
-          if (e.cause === 'water') {
-            // Cair no rio (mapa da ponte) e um afogamento, nao uma explosao —
-            // chapinho azul n'agua em vez do estilhaco de vidro de sempre.
-            this.floatingTexts.spawn(p.x, p.y - JORBE_HEIGHT - 10, 'AFOGOU!', PALETTE.water);
-            this.particles.burst(p.x, p.y, 26, PALETTE.water);
-            this.particles.flash(p.x, p.y, 20);
-            sfx.sfxSplash();
-          } else {
-            this.particles.burst(p.x, p.y - JORBE_HEIGHT / 2, 30, PALETTE.bottle);
-            sfx.sfxDeath();
-          }
+          this.triggerDeathVisuals(p, e.cause === 'water');
         }
         break;
       }
@@ -1447,6 +1483,11 @@ export class MatchScene {
     }
 
     for (const p of this.players.values()) {
+      // Quem afogou afunda de vez apos SUBMERGE_DURATION -- some da tela em
+      // vez de ficar parado em pe dentro d'agua pro resto da partida.
+      if (p.submergedAt !== null && this.clock - p.submergedAt >= SUBMERGE_DURATION) continue;
+      const submergeT = p.submergedAt !== null ? Math.min(1, (this.clock - p.submergedAt) / SUBMERGE_DURATION) : 0;
+
       const isSelf = p.id === this.ownId;
       // Parado, o Jorbe respira — um esprime bem sutil, fora de fase entre jogadores.
       const idleBob = p.alive && p.rig.walkAmp < 0.05
@@ -1470,7 +1511,8 @@ export class MatchScene {
       const canAim = isSelf && this.phase === 'prep' && p.alive;
       drawJorbe(ctx, {
         x: p.x,
-        y: p.y,
+        // Afunda gradualmente na agua em vez de ficar em pe parado nela.
+        y: p.y + submergeT * JORBE_HEIGHT * 1.15,
         facing: p.facing,
         hp: p.hp,
         alive: p.alive,
@@ -1483,6 +1525,7 @@ export class MatchScene {
             ? `${this.aimAngle.toFixed(0)}° · ${Math.round(this.power)}${this.shieldArmed ? ' · Escudo' : ''}`
             : null,
         anim: p.alive ? anim : { ...IDLE_ANIM, hitFlash: 0 },
+        alpha: 1 - submergeT,
       });
 
       if (isSelf && this.showFireTutorial && this.phase === 'prep' && !this.aimLocked && p.alive) {

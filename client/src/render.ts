@@ -415,6 +415,8 @@ export interface JorbeDrawState {
   /** Texto do balaozinho de angulo/forca acima da cabeca — null esconde. */
   aimLabel: string | null;
   anim: JorbeAnim;
+  /** Multiplicador extra de opacidade (0..1) — usado pro corpo desbotar enquanto afunda na agua. */
+  alpha?: number;
 }
 
 /**
@@ -440,7 +442,7 @@ export function drawJorbe(ctx: CanvasRenderingContext2D, s: JorbeDrawState): voi
   ctx.translate(cx, feet);
   ctx.scale(s.facing * scaleX, scaleY);
 
-  if (!s.alive) ctx.globalAlpha = 0.35;
+  ctx.globalAlpha = (s.alive ? 1 : 0.35) * (s.alpha ?? 1);
 
   ctx.lineWidth = 2;
   ctx.strokeStyle = INK;

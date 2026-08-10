@@ -139,7 +139,7 @@ export function boxHits(t: Terrain, x: number, y: number): boolean {
 }
 
 /** Os pes do Jorbe encostaram na agua? No mapa da ponte, cair no rio mata na hora. */
-function feetInLiquid(t: Terrain, c: CharState): boolean {
+export function feetInLiquid(t: Terrain, c: CharState): boolean {
   const half = JORBE_WIDTH / 2;
   const y = Math.round(c.y);
   const x0 = Math.round(c.x - half);
