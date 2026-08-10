@@ -481,6 +481,14 @@ export class MatchScene {
     this.remaining = data.seconds;
     this.fuel = data.fuel;
     this.ammo = data.ammo;
+    // Se a arma que estava selecionada ficou sem municao (gastou a ultima
+    // carga na rodada anterior), volta pra Tampinha (infinita) — senao o
+    // jogador fica sem poder atirar e so percebe quando o tempo ja acabou.
+    const selected = WEAPONS[this.weaponIdx];
+    const selectedAmmo = selected ? this.ammo[selected.id] : undefined;
+    if (selected && !selected.defensive && selectedAmmo !== null && selectedAmmo !== undefined && selectedAmmo <= 0) {
+      this.weaponIdx = 0;
+    }
     this.phase = 'prep';
     this.power = 0;
     this.charging = false;
