@@ -1883,15 +1883,36 @@ export class MatchScene {
 
       const iconColor = out ? 'rgba(217,164,65,0.3)' : w.color;
       const textColor = active ? INK : out ? 'rgba(244,228,193,0.35)' : PALETTE.cream;
-      const ammoLabel = ammo === null || ammo === undefined ? 'infinita' : `${ammo}`;
+      // "x3"/infinito em vez de um numero solto -- sem isso a municao (ex:
+      // "3") ficava identica de cara ao numero de atalho logo em cima dela
+      // (ex: "3" tambem), um confundindo com o outro.
+      const ammoText = ammo === null || ammo === undefined ? '∞' : `×${ammo}`;
+      // So as 4 primeiras cartas tem tecla de verdade (1/2/3 trocam de arma,
+      // 4 arma/desarma o escudo) -- armas de drop (5a em diante) nao tem
+      // atalho nenhum, entao nem mostra o selo pra nao sugerir que teclar
+      // aquele numero faz alguma coisa.
+      const hasShortcut = i < 4;
 
-      drawWeaponIcon(ctx, w.id, card.x + card.w / 2, card.y + 21, 24, iconColor);
+      drawWeaponIcon(ctx, w.id, card.x + card.w / 2, card.y + 23, 24, iconColor);
+
+      if (hasShortcut) {
+        ctx.fillStyle = 'rgba(19,8,2,0.55)';
+        ctx.beginPath();
+        ctx.roundRect(card.x + 3, card.y + 3, 15, 15, 3);
+        ctx.fill();
+        ctx.strokeStyle = 'rgba(244,228,193,0.45)';
+        ctx.lineWidth = 1;
+        ctx.stroke();
+        ctx.textAlign = 'center';
+        ctx.fillStyle = 'rgba(244,228,193,0.9)';
+        ctx.font = 'bold 10px Georgia, serif';
+        ctx.fillText(`${i + 1}`, card.x + 10.5, card.y + 14);
+      }
+
       ctx.textAlign = 'center';
       ctx.fillStyle = textColor;
-      ctx.font = 'bold 13px Georgia, serif';
-      ctx.fillText(`${i + 1}`, card.x + card.w / 2, card.y + 46);
-      ctx.font = '11px Georgia, serif';
-      ctx.fillText(this.fitText(ctx, ammoLabel, card.w - 8), card.x + card.w / 2, card.y + 58);
+      ctx.font = 'bold 12px Georgia, serif';
+      ctx.fillText(this.fitText(ctx, ammoText, card.w - 8), card.x + card.w / 2, card.y + 52);
       ctx.textAlign = 'left';
     });
 
