@@ -41,6 +41,7 @@ import {
   Shockwaves,
   Spring,
   TerrainRenderer,
+  drawCableCar,
   drawCrate,
   drawFilmOverlay,
   drawJorbe,
@@ -183,6 +184,8 @@ export class MatchScene {
 
   private terrain: Terrain | null = null;
   private terrainRenderer: TerrainRenderer | null = null;
+  /** Qual mapa esta rodando -- alguns mapas tem cenario/decoracao proprios (ex: Pao de Acucar). */
+  private mapId = '';
   private players = new Map<string, RemotePlayer>();
   private ownId = '';
 
@@ -435,6 +438,7 @@ export class MatchScene {
 
   private onMatchStart(data: MatchStart): void {
     this.ownId = this.net.playerId;
+    this.mapId = data.mapId;
     this.terrain = Terrain.generate(data.mapId, data.seed);
     // Quem entra no meio da partida recebe as crateras ja abertas.
     for (const c of data.carves) this.terrain.carve(c);
@@ -1413,7 +1417,7 @@ export class MatchScene {
   private draw(): void {
     const ctx = this.ctx;
     ctx.clearRect(0, 0, this.cam.viewW, this.cam.viewH);
-    drawSky(ctx, this.cam);
+    drawSky(ctx, this.cam, this.mapId);
 
     if (!this.terrainRenderer) {
       this.drawCenteredText('gerando a fabrica...', PALETTE.cream);
@@ -1425,6 +1429,7 @@ export class MatchScene {
     ctx.translate(-Math.round(this.cam.renderX), -Math.round(this.cam.renderY));
 
     ctx.drawImage(this.terrainRenderer.canvas, 0, 0);
+    if (this.mapId === 'sugarloaf') drawCableCar(ctx, this.clock);
 
     if (this.lastShotTrail && this.phase === 'prep') {
       ctx.save();

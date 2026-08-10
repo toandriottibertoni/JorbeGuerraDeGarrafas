@@ -37,6 +37,8 @@ export interface MapDef {
   caves: number;
   /** Viaduto fino sobre agua em vez de morro/caverna -- ver `generateBridge`. */
   bridge?: boolean;
+  /** Duas montanhas com ilhargas em terraco sobre o mar -- ver `generateSugarloaf`. */
+  twinPeaks?: boolean;
 }
 
 // `relief` e em pixels absolutos — escalado junto com o corte de MAP_HEIGHT
@@ -51,6 +53,11 @@ export const MAPS: readonly MapDef[] = [
   // destrutivel sobre o rio. Estrategia propria: derrubar o adversario na
   // agua mata igual a estourar ele.
   { id: 'ponte', name: 'Ponte Rio-Niteroi', groundLevel: 0.42, relief: 0, caves: 0, bridge: true },
+  // Morro da Urca + Pao de Acucar, ligados pelo bondinho (so cenario, sem
+  // fisica) sobre o mar -- ver `generateSugarloaf`. `groundLevel` aqui e o
+  // nivel do mar, nao a media do chao (mesmo truque de reaproveitar o campo
+  // que a Ponte ja faz com o deck).
+  { id: 'sugarloaf', name: 'Pao de Acucar', groundLevel: 0.68, relief: 0, caves: 0, twinPeaks: true },
 ];
 
 export function getMap(id: string): MapDef {
@@ -83,6 +90,10 @@ export class Terrain {
     const t = new Terrain(MAP_WIDTH, MAP_HEIGHT);
     if (def.bridge) {
       generateBridge(t, def, seed);
+      return t;
+    }
+    if (def.twinPeaks) {
+      generateSugarloaf(t, def);
       return t;
     }
 
@@ -241,6 +252,94 @@ function generateBridge(t: Terrain, def: MapDef, seed: number): void {
         if (x < 0 || x >= width) continue;
         data[y * width + x] = Mat.ROCK;
       }
+    }
+  }
+}
+
+/**
+ * Topo de cada morro -- exportado pra o cliente desenhar o cabo do bondinho
+ * (so cenario, sem colisao) sem duplicar a geometria da montanha aqui.
+ */
+export const SUGARLOAF_STATIONS = {
+  urca: { x: MAP_WIDTH * 0.26, y: MAP_HEIGHT * 0.32 },
+  sugarloaf: { x: MAP_WIDTH * 0.68, y: MAP_HEIGHT * 0.1 },
+};
+
+interface PeakProfile {
+  cx: number;
+  /** Raio (distancia do centro) decrescente ate 0 (cume) — pontos plano-a-plano viram terraco. */
+  points: { r: number; y: number }[];
+}
+
+function peakSurfaceY(dx: number, peak: PeakProfile): number | null {
+  const d = Math.abs(dx);
+  const pts = peak.points;
+  if (d >= pts[0]!.r) return null;
+  for (let i = 0; i < pts.length - 1; i++) {
+    const a = pts[i]!;
+    const b = pts[i + 1]!;
+    if (d <= a.r && d >= b.r) {
+      const t = a.r === b.r ? 0 : (a.r - d) / (a.r - b.r);
+      return a.y + (b.y - a.y) * t;
+    }
+  }
+  return pts[pts.length - 1]!.y;
+}
+
+/**
+ * Morro da Urca (mais baixo) e Pao de Acucar (mais alto), duas ilhas de
+ * granito cercadas de mar em vez de um unico morro/caverna. Cada uma sobe em
+ * TERRACOS (patamares planos em alturas bem diferentes) ao inves de encosta
+ * lisa -- e o degrau que faz `pickSpawns` (que so pega qualquer coluna com
+ * chao firme, sem mudar nada nela) espalhar gente em alturas bem diferentes.
+ * Sem trigonometria de proposito (mesma convencao da `generateBridge`).
+ */
+function generateSugarloaf(t: Terrain, def: MapDef): void {
+  const { width, height, data } = t;
+  const waterY = height * def.groundLevel;
+  const floorY = height - 24;
+
+  const urca: PeakProfile = {
+    cx: SUGARLOAF_STATIONS.urca.x,
+    points: [
+      { r: 300, y: waterY },
+      { r: 230, y: waterY - 60 },
+      { r: 180, y: waterY - 60 },
+      { r: 150, y: waterY - 120 },
+      { r: 100, y: waterY - 120 },
+      { r: 70, y: waterY - 180 },
+      { r: 0, y: SUGARLOAF_STATIONS.urca.y },
+    ],
+  };
+  const acucar: PeakProfile = {
+    cx: SUGARLOAF_STATIONS.sugarloaf.x,
+    points: [
+      { r: 340, y: waterY },
+      { r: 260, y: waterY - 80 },
+      { r: 210, y: waterY - 80 },
+      { r: 175, y: waterY - 150 },
+      { r: 130, y: waterY - 150 },
+      { r: 90, y: waterY - 240 },
+      { r: 40, y: waterY - 240 },
+      { r: 0, y: SUGARLOAF_STATIONS.sugarloaf.y },
+    ],
+  };
+
+  for (let x = 0; x < width; x++) {
+    const leftY = peakSurfaceY(x - urca.cx, urca);
+    const rightY = peakSurfaceY(x - acucar.cx, acucar);
+    const surface = leftY === null ? rightY : rightY === null ? leftY : Math.min(leftY, rightY);
+
+    for (let y = 0; y < height; y++) {
+      const idx = y * width + x;
+      if (y >= floorY) {
+        data[idx] = Mat.ROCK;
+      } else if (surface !== null && y >= surface) {
+        data[idx] = Mat.DIRT;
+      } else if (y >= waterY) {
+        data[idx] = Mat.LIQUID;
+      }
+      // Acima da superficie e abaixo da agua (fora da montanha): ar, ceu aberto.
     }
   }
 }

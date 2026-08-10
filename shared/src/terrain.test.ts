@@ -133,6 +133,49 @@ test('ponte: os jogadores nascem sobre o deck, nao dentro da agua', () => {
   }
 });
 
+test('pao de acucar: dois morros distintos com mar aberto entre eles', () => {
+  const t = Terrain.generate('sugarloaf', 21);
+  const midX = Math.floor(MAP_WIDTH / 2);
+
+  // Entre os dois morros (perto do centro do mapa) o topo tem que ser mar
+  // aberto, nao terra -- senao seria um unico morro largo, nao duas ilhas.
+  let foundWater = false;
+  for (let y = 0; y < MAP_HEIGHT - 24; y++) {
+    if (t.at(midX, y) === Mat.LIQUID) {
+      foundWater = true;
+      break;
+    }
+  }
+  assert.ok(foundWater, 'precisa haver mar aberto entre os dois morros');
+
+  // O fundo continua indestrutivel feito nos outros mapas.
+  assert.equal(t.at(midX, MAP_HEIGHT - 5), Mat.ROCK, 'fundo deve ser rocha');
+});
+
+test('pao de acucar: os jogadores nascem em alturas bem diferentes (terracos)', () => {
+  const t = Terrain.generate('sugarloaf', 21);
+  const spawns = pickSpawns(t, 12, 21);
+  assert.ok(spawns.length >= 8, 'precisa caber varios jogadores nos dois morros');
+
+  const ys = spawns.map((s) => s.y);
+  const spread = Math.max(...ys) - Math.min(...ys);
+  assert.ok(
+    spread > 150,
+    `terracos deveriam espalhar spawns em alturas bem diferentes, veio spread=${spread}`,
+  );
+
+  const half = Math.floor(JORBE_WIDTH / 2);
+  for (const s of spawns) {
+    assert.notEqual(t.at(s.x, s.y + 2), Mat.LIQUID, 'nao pode nascer em cima do mar');
+    let foundGroundNearby = false;
+    for (let dx = -half; dx <= half; dx++) {
+      const x = Math.max(0, Math.min(MAP_WIDTH - 1, s.x + dx));
+      if (t.isSolid(x, s.y + 2)) foundGroundNearby = true;
+    }
+    assert.ok(foundGroundNearby, `deveria haver chao proximo sob o spawn em x=${s.x}`);
+  }
+});
+
 test('carve na ponte nao apaga o rio (agua nao vira ar)', () => {
   const t = Terrain.generate('ponte', 21);
   const midX = Math.floor(MAP_WIDTH / 2);

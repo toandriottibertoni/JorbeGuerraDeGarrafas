@@ -5,6 +5,7 @@ import {
   MAP_HEIGHT,
   MAP_WIDTH,
   Mat,
+  SUGARLOAF_STATIONS,
   type Terrain,
 } from '@jorbe/shared';
 
@@ -263,7 +264,16 @@ function hexToRgb(hex: string): [number, number, number] {
 // Cenario
 // ---------------------------------------------------------------------------
 
-export function drawSky(ctx: CanvasRenderingContext2D, cam: Camera): void {
+/** Ceu padrao (industrial, anos 30) ou o do Pao de Acucar, se for esse o mapa. */
+export function drawSky(ctx: CanvasRenderingContext2D, cam: Camera, mapId?: string): void {
+  if (mapId === 'sugarloaf') {
+    drawRioSky(ctx, cam);
+    return;
+  }
+  drawIndustrialSky(ctx, cam);
+}
+
+function drawIndustrialSky(ctx: CanvasRenderingContext2D, cam: Camera): void {
   const g = ctx.createLinearGradient(0, 0, 0, cam.viewH);
   g.addColorStop(0, PALETTE.sky0);
   g.addColorStop(0.55, PALETTE.sky1);
@@ -286,6 +296,156 @@ export function drawSky(ctx: CanvasRenderingContext2D, cam: Camera): void {
     // Chamine
     ctx.fillRect(bx + bw * 0.3, groundScreenY - bh - 40 - ((i * 17) % 40), 14, 50);
   }
+}
+
+/**
+ * Ceu de dia claro do Pao de Acucar: sol, serra distante, o Corcovado com o
+ * Cristo Redentor em silhueta, e uma faixa de orla/predios ao longe -- so
+ * cenario, sem colisao nenhuma. `parallaxX` ancora cada camada num ponto do
+ * MUNDO com uma velocidade propria (0 = sempre no centro da tela, 1 = anda
+ * junto com o terreno), pra dar sensacao de profundidade sem ter que gerenciar
+ * "camadas" de verdade.
+ */
+function drawRioSky(ctx: CanvasRenderingContext2D, cam: Camera): void {
+  const g = ctx.createLinearGradient(0, 0, 0, cam.viewH);
+  g.addColorStop(0, '#3d7fc4');
+  g.addColorStop(0.55, '#8ec2e6');
+  g.addColorStop(1, '#d9eef5');
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, cam.viewW, cam.viewH);
+
+  const camCenterWorldX = cam.x + cam.viewW / cam.zoom / 2;
+  const parallaxX = (worldX: number, factor: number): number =>
+    cam.viewW / 2 + (worldX - camCenterWorldX) * factor;
+  const groundScreenY = (MAP_HEIGHT - cam.renderY) * cam.zoom;
+
+  // Sol, um pouco a esquerda do centro (o Cristo fica de frente pra ele na foto de referencia).
+  const sunX = cam.viewW * 0.4;
+  const sunY = cam.viewH * 0.16;
+  const glow = ctx.createRadialGradient(sunX, sunY, 4, sunX, sunY, 150);
+  glow.addColorStop(0, 'rgba(255,250,230,0.9)');
+  glow.addColorStop(1, 'rgba(255,250,230,0)');
+  ctx.fillStyle = glow;
+  ctx.fillRect(sunX - 150, sunY - 150, 300, 300);
+  ctx.fillStyle = '#fff8e4';
+  ctx.beginPath();
+  ctx.arc(sunX, sunY, 24, 0, Math.PI * 2);
+  ctx.fill();
+
+  // Serra ao fundo, bem devagar (a camada mais distante).
+  ctx.fillStyle = 'rgba(112,138,168,0.5)';
+  ctx.beginPath();
+  ctx.moveTo(0, groundScreenY);
+  for (let x = 0; x <= cam.viewW; x += 20) {
+    const wx = camCenterWorldX + (x - cam.viewW / 2) / 0.12;
+    const h = 46 + Math.abs(((wx * 0.9) % 240) - 120) * 0.5;
+    ctx.lineTo(x, groundScreenY - h);
+  }
+  ctx.lineTo(cam.viewW, groundScreenY);
+  ctx.closePath();
+  ctx.fill();
+
+  // O Corcovado com o Cristo Redentor -- morro proprio, um pouco mais perto.
+  const corcX = parallaxX(MAP_WIDTH * 0.46, 0.22);
+  const corcBaseY = groundScreenY;
+  const hillH = 130;
+  const hillW = 220;
+  ctx.fillStyle = 'rgba(70,95,120,0.7)';
+  ctx.beginPath();
+  ctx.moveTo(corcX - hillW / 2, corcBaseY);
+  ctx.quadraticCurveTo(corcX - hillW * 0.3, corcBaseY - hillH * 0.5, corcX, corcBaseY - hillH);
+  ctx.quadraticCurveTo(corcX + hillW * 0.3, corcBaseY - hillH * 0.5, corcX + hillW / 2, corcBaseY);
+  ctx.closePath();
+  ctx.fill();
+
+  // Estatua: figura minuscula de bracos abertos no cume do morro.
+  const statueY = corcBaseY - hillH;
+  ctx.strokeStyle = 'rgba(55,75,95,0.85)';
+  ctx.lineWidth = 3;
+  ctx.beginPath();
+  ctx.moveTo(corcX, statueY);
+  ctx.lineTo(corcX, statueY - 22);
+  ctx.moveTo(corcX - 13, statueY - 15);
+  ctx.lineTo(corcX + 13, statueY - 15);
+  ctx.stroke();
+  ctx.fillStyle = 'rgba(55,75,95,0.85)';
+  ctx.beginPath();
+  ctx.arc(corcX, statueY - 26, 4, 0, Math.PI * 2);
+  ctx.fill();
+
+  // Orla e predios distantes, mais perto ainda (parallax mais rapido) —
+  // sugere Copacabana do outro lado da baia, sem tentar desenhar de verdade.
+  const cityOff = parallaxX(MAP_WIDTH * 0.5, 0.32) - cam.viewW / 2;
+  ctx.fillStyle = 'rgba(220,225,230,0.6)';
+  for (let i = 0; i < 24; i++) {
+    const bx = ((i * 70 + cityOff) % (cam.viewW + 400)) - 200;
+    const bw = 18 + ((i * 13) % 20);
+    const bh = 22 + ((i * 29) % 46);
+    ctx.fillRect(bx, groundScreenY - bh, bw, bh);
+  }
+  ctx.fillStyle = 'rgba(235,214,170,0.55)';
+  ctx.fillRect(0, groundScreenY - 6, cam.viewW, 6);
+}
+
+/**
+ * Bondinho do Pao de Acucar -- so cenario, sem colisao nem fisica. Liga o
+ * cume dos dois morros (mesmas coordenadas que `generateSugarloaf` usa,
+ * pra nunca desalinhar do terreno de verdade) com um cabo, e uma gondola
+ * desliza devagar de um lado pro outro. Desenhado em espaco de MUNDO —
+ * quem chama precisa estar dentro do mesmo `ctx.translate` que desenha o
+ * terreno.
+ */
+export function drawCableCar(ctx: CanvasRenderingContext2D, clock: number): void {
+  const a = SUGARLOAF_STATIONS.urca;
+  const b = SUGARLOAF_STATIONS.sugarloaf;
+  const towerH = 34;
+
+  const drawTower = (x: number, y: number): void => {
+    ctx.strokeStyle = 'rgba(40,30,20,0.8)';
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.moveTo(x, y);
+    ctx.lineTo(x, y - towerH);
+    ctx.moveTo(x - 22, y - towerH);
+    ctx.lineTo(x + 22, y - towerH);
+    ctx.moveTo(x - 22, y - towerH);
+    ctx.lineTo(x, y);
+    ctx.moveTo(x + 22, y - towerH);
+    ctx.lineTo(x, y);
+    ctx.stroke();
+  };
+  drawTower(a.x, a.y);
+  drawTower(b.x, b.y);
+
+  const cableY0 = a.y - towerH;
+  const cableY1 = b.y - towerH;
+  ctx.strokeStyle = 'rgba(30,20,12,0.75)';
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.moveTo(a.x, cableY0);
+  ctx.lineTo(b.x, cableY1);
+  ctx.stroke();
+
+  // So cosmetico -- Math.sin aqui e ok (nao faz parte da fisica compartilhada
+  // e nao precisa ser determinista entre cliente e servidor).
+  const t = (Math.sin(clock * 0.15) + 1) / 2;
+  const gx = a.x + (b.x - a.x) * t;
+  const gy = cableY0 + (cableY1 - cableY0) * t;
+
+  ctx.strokeStyle = 'rgba(30,20,12,0.7)';
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.moveTo(gx, gy);
+  ctx.lineTo(gx, gy + 10);
+  ctx.stroke();
+
+  ctx.fillStyle = '#e0b23a';
+  ctx.strokeStyle = INK;
+  ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  ctx.roundRect(gx - 10, gy + 10, 20, 14, 3);
+  ctx.fill();
+  ctx.stroke();
 }
 
 /** Grain de pelicula + vinheta, no espirito Fleischer/Cuphead do universo do Jorbe. */
