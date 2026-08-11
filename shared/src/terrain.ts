@@ -310,14 +310,22 @@ function generateSugarloaf(t: Terrain, def: MapDef): void {
   const waterY = height * def.groundLevel;
   const floorY = height - 24;
 
+  // As subidas entre patamares (nao os patamares em si) precisam ficar perto
+  // de 45 graus — a versao original tinha alguns trechos passando de 60
+  // graus (60px de subida em so 30px de corrida), o que fazia o Jorbe
+  // parado na borda de um patamar parecer enfiado na ladeira quase vertical
+  // atras dele. Aqui so os degraus do meio (os que ficavam mais ingremes)
+  // ganharam corrida maior; a subida final pro cume continua estreita de
+  // proposito (e um dome de granito, faz sentido ficar bem vertical perto
+  // do topo, e ninguem costuma parar bem ali).
   const urca: PeakProfile = {
     cx: SUGARLOAF_STATIONS.urca.x,
     points: [
-      { r: 300, y: waterY },
+      { r: 350, y: waterY },
+      { r: 280, y: waterY - 60 },
       { r: 230, y: waterY - 60 },
-      { r: 180, y: waterY - 60 },
-      { r: 150, y: waterY - 120 },
-      { r: 100, y: waterY - 120 },
+      { r: 175, y: waterY - 120 },
+      { r: 125, y: waterY - 120 },
       { r: 70, y: waterY - 180 },
       { r: 0, y: SUGARLOAF_STATIONS.urca.y },
     ],
@@ -325,11 +333,11 @@ function generateSugarloaf(t: Terrain, def: MapDef): void {
   const acucar: PeakProfile = {
     cx: SUGARLOAF_STATIONS.sugarloaf.x,
     points: [
-      { r: 340, y: waterY },
-      { r: 260, y: waterY - 80 },
-      { r: 210, y: waterY - 80 },
-      { r: 175, y: waterY - 150 },
-      { r: 130, y: waterY - 150 },
+      { r: 385, y: waterY },
+      { r: 305, y: waterY - 80 },
+      { r: 255, y: waterY - 80 },
+      { r: 200, y: waterY - 150 },
+      { r: 155, y: waterY - 150 },
       { r: 90, y: waterY - 240 },
       { r: 40, y: waterY - 240 },
       { r: 0, y: SUGARLOAF_STATIONS.sugarloaf.y },
@@ -368,8 +376,13 @@ function generateMaracana(t: Terrain, def: MapDef): void {
   const pitchY = height * def.groundLevel;
   const standInnerL = width * 0.3;
   const standInnerR = width * 0.7;
-  const steps = 3;
-  const stepWidth = 30;
+  // 5 fileiras em vez de 3, cada uma bem mais larga que alta -- a versao
+  // original tinha degraus de quase 70 graus (73px de subida em so 30px de
+  // corrida), o que fazia o Jorbe parado numa fileira parecer enfiado na
+  // fileira de tras. Mais fileiras tambem da mais variedade de altura de
+  // spawn (o objetivo original do mapa), nao so texture de arquibancada.
+  const steps = 5;
+  const stepWidth = 48;
   const zoneW = steps * stepWidth;
   const delta = (pitchY - standTopY) / steps;
 
@@ -443,6 +456,10 @@ export function pickSpawns(terrain: Terrain, count: number, seed: number): { x: 
     const y = groundBelowSpan(terrain, x, JORBE_WIDTH);
     // Fora do mapa ou dentro da faixa de rocha do fundo: descarta.
     if (y >= terrain.height - 30) continue;
+    // Bem na beira da agua (ex: Pao de Acucar, Ponte): a coluna ainda conta
+    // como "chao firme", mas os pes ja nascem quase na agua -- feio e
+    // perigoso (um passo errado e ja afoga). Descarta e tenta outro x.
+    if (terrain.at(x, y + 2) === Mat.LIQUID) continue;
     spawns.push({ x, y: y - 1 });
   }
 
@@ -450,7 +467,9 @@ export function pickSpawns(terrain: Terrain, count: number, seed: number): { x: 
   let fallbackX = margin;
   while (spawns.length < count) {
     const y = groundBelowSpan(terrain, fallbackX, JORBE_WIDTH);
-    if (y < terrain.height - 30) spawns.push({ x: fallbackX, y: y - 1 });
+    if (y < terrain.height - 30 && terrain.at(fallbackX, y + 2) !== Mat.LIQUID) {
+      spawns.push({ x: fallbackX, y: y - 1 });
+    }
     fallbackX += 60;
     if (fallbackX > terrain.width - margin) break;
   }

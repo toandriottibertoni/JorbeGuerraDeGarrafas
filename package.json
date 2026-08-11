@@ -1,6 +1,6 @@
 {
   "name": "guerra-de-garrafas",
-  "version": "0.13.1",
+  "version": "0.13.2",
   "private": true,
   "type": "module",
   "description": "Guerra de Garrafas — jogo de artilharia online estilo Gunbound + Worms, com o Jorbe Guarna",
