@@ -631,7 +631,40 @@ export class MatchScene {
     p.rig.prevHp = newHp;
   }
 
+  /**
+   * Se a aba ficou em segundo plano (rAF pausado) e a rodada anterior ainda
+   * nao tinha terminado de "tocar" quando a proxima chegou, nao da pra
+   * simplesmente descartar o playback velho -- as crateras/caixas dele
+   * nunca seriam aplicadas no terreno/estado local, e o cliente ficaria
+   * permanentemente dessincronizado do servidor (preso na tela antiga ate
+   * um F5). Aplica de uma vez, sem efeito visual, tudo que faltava.
+   */
+  private flushPlayback(pb: Playback): void {
+    const t = this.terrain;
+    while (pb.eventIdx < pb.plan.events.length) {
+      const e = pb.plan.events[pb.eventIdx];
+      if (t && e.kind === 'explosion') t.carve({ x: e.x, y: e.y, r: e.radius });
+      if (e.kind === 'crateHit') this.crates = this.crates.filter((c) => c.id !== e.crateId);
+      pb.eventIdx++;
+    }
+    for (const fs of pb.plan.finalStates) {
+      const p = this.players.get(fs.id);
+      if (!p) continue;
+      p.x = fs.x;
+      p.y = fs.y;
+      p.targetX = fs.x;
+      p.targetY = fs.y;
+      p.vx = fs.vx;
+      p.vy = fs.vy;
+      p.onGround = fs.onGround;
+      p.hp = fs.hp;
+      p.alive = fs.alive;
+    }
+  }
+
   private onRoundResolve(plan: ResolutionPlan): void {
+    if (this.playback) this.flushPlayback(this.playback);
+
     this.phase = 'resolve';
     this.playAcc = 0;
     this.charging = false;
