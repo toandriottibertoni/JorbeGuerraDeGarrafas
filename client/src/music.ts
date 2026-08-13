@@ -5,7 +5,13 @@
  *
  * Volume e mudo sao persistidos separado do SFX: o jogador pode querer ouvir
  * so os efeitos sonoros, so a musica, os dois ou nenhum.
+ *
+ * Os jingles de destaque (tiro fantastico, double/triple/quadra/legendary
+ * kill) NAO sao musica de fundo -- sao reacao a uma jogada, no mesmo espirito
+ * do SFX. Por isso obedecem ao mudo de EFEITOS (audio.ts), nao ao de musica:
+ * desligar a musica de fundo nao pode calar o "TRIPLE KILL!".
  */
+import { isMuted as sfxMuted } from './audio';
 
 const VOLUME_KEY = 'jorbe_music_volume';
 const MUTED_KEY = 'jorbe_music_muted';
@@ -85,49 +91,41 @@ export function stopMusic(): void {
   bgTracks = [];
 }
 
+/** Volume fixo dos jingles de reacao -- nao usa o slider de musica, ja que agora sao SFX. */
+const JINGLE_VOLUME = 0.8;
+
+function playJingle(src: string): void {
+  if (sfxMuted()) return;
+  const a = new Audio(src);
+  a.volume = JINGLE_VOLUME;
+  void a.play().catch(() => {});
+}
+
 /** Jingle de "prontos!" — toca uma vez quando a primeira rodada da partida comeca. */
 export function playReady(): void {
-  if (muted) return;
-  const a = new Audio('/audio/ready.mp3');
-  a.volume = volume;
-  void a.play().catch(() => {});
+  playJingle('/audio/ready.mp3');
 }
 
 /** Jingle de tiro fantastico — toca uma vez quando alguem acerta um tiro digno de destaque. */
 export function playFantastic(): void {
-  if (muted) return;
-  const a = new Audio('/audio/fantastic.mp3');
-  a.volume = volume;
-  void a.play().catch(() => {});
+  playJingle('/audio/fantastic.mp3');
 }
 
 /** Jingles de multi-kill -- toca uma vez quando alguem derruba varios adversarios na mesma rodada. */
 export function playDoubleKill(): void {
-  if (muted) return;
-  const a = new Audio('/audio/double-kill.mp3');
-  a.volume = volume;
-  void a.play().catch(() => {});
+  playJingle('/audio/double-kill.mp3');
 }
 
 export function playTripleKill(): void {
-  if (muted) return;
-  const a = new Audio('/audio/triple-kill.mp3');
-  a.volume = volume;
-  void a.play().catch(() => {});
+  playJingle('/audio/triple-kill.mp3');
 }
 
 export function playQuadraKill(): void {
-  if (muted) return;
-  const a = new Audio('/audio/quadra-kill.mp3');
-  a.volume = volume;
-  void a.play().catch(() => {});
+  playJingle('/audio/quadra-kill.mp3');
 }
 
 export function playLegendaryKill(): void {
-  if (muted) return;
-  const a = new Audio('/audio/legendary-kill.mp3');
-  a.volume = volume;
-  void a.play().catch(() => {});
+  playJingle('/audio/legendary-kill.mp3');
 }
 
 export function setVolume(v: number): void {

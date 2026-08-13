@@ -613,6 +613,35 @@ test('um tiro que mata dois adversarios de uma vez conta como double kill', () =
   );
 });
 
+test('sub-estouros do racimo (cluster) sao atribuiveis ao dono do tiro', () => {
+  // Regressao: os sub-estouros do racimo usavam um shotId sintetico
+  // (p.id*1000+i) que nunca aparecia no mapa tiro->dono, entao uma morte
+  // ou dano causado por um sub-estouro (em vez do estouro central) nao era
+  // atribuido a ninguem -- nem dano, nem abate, nem multi-kill, nem caixa
+  // acertada de raspao pela nuvem de estilhacos.
+  const { engine, sink } = makeMatch(3);
+  engine.start();
+  poke(engine).wind = 0;
+
+  const p0 = poke(engine).players.get('p0');
+  p0.ammo.racimo = 1; // racimo e dropOnly -- concede uma carga pro teste.
+
+  engine.applyAim('p0', { angle: 90, power: 95, weaponId: 'racimo', fire: true });
+  advance(engine, 31);
+
+  const plan = (sink.eventsOf('roundResolve') as ResolutionPlan[])[0];
+  assert.ok(plan, 'a rodada precisa ter resolvido');
+  const explosions = plan.events.filter((e): e is Extract<SimEvent, { kind: 'explosion' }> => e.kind === 'explosion');
+  assert.equal(explosions.length, 6, 'estouro central + 5 sub-estouros do racimo');
+  const shotOwnerIds = new Set(plan.shots.map((s) => s.id));
+  for (const e of explosions) {
+    assert.ok(
+      shotOwnerIds.has(e.shotId),
+      `estouro (x=${e.x}, y=${e.y}) tem shotId ${e.shotId} que nao aparece em nenhum tiro real -- nao pode ser atribuido a ninguem`,
+    );
+  }
+});
+
 test('matar so um adversario nao conta como multi-kill', () => {
   const { engine, sink } = makeMatch(2);
   engine.start();

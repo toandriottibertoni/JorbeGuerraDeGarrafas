@@ -413,7 +413,12 @@ export function explode(
       const f = n === 1 ? 0 : (i / (n - 1)) * 2 - 1; // -1..1, leque simetrico
       const ox = p.x + f * spread;
       const oy = p.y - Math.abs(f) * spread * 0.35;
-      blastAt(ox, oy, subRadius, p.id * 1000 + i + 1, 0.6, tick + i * gap);
+      // Usa o mesmo `p.id` do tiro real (nao um id sintetico por sub-estouro):
+      // o servidor identifica quem matou/estourou caixa olhando o shotId do
+      // evento 'explosion' mais recente antes de cada dano/morte -- com um id
+      // sintetico nao registrado em lugar nenhum, racimo/napalm/mirv/vespas
+      // nunca creditavam abate, dano ou caixa a quem atirou.
+      blastAt(ox, oy, subRadius, p.id, 0.6, tick + i * gap);
     }
   }
 }
