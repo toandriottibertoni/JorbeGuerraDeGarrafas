@@ -537,9 +537,12 @@ test('mira mandada pelo socket vira tiro na resolucao da rodada', async () => {
     const plan = await resolvePromise;
     dono.off('snapshot', resend);
 
-    assert.equal(plan.shots.length, 1, 'a mira precisa ter virado exatamente um tiro');
-    assert.equal(plan.shots[0].ownerId, myId);
-    assert.equal(plan.shots[0].weaponId, 'bazuca');
+    // O Jorbot da sala tambem atira sozinho antes da rodada resolver -- 2
+    // tiros no total (o nosso + o dele), nao so o nosso.
+    assert.equal(plan.shots.length, 2, 'a mira precisa ter virado um tiro, alem do tiro do Jorbot');
+    const mine = plan.shots.find((s) => s.ownerId === myId);
+    assert.ok(mine, 'o tiro do jogador humano precisa estar no plano');
+    assert.equal(mine!.weaponId, 'bazuca');
     assert.ok(plan.events.length > 0, 'a resolucao precisa produzir eventos');
     assert.ok(
       plan.events.some((e) => e.kind === 'explosion'),

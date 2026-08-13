@@ -13,6 +13,7 @@ import {
   JORBE_HEIGHT,
   JORBE_MAX_HP,
   JORBE_WIDTH,
+  Mat,
   MAX_POWER,
   MIN_POWER,
   NO_INPUT,
@@ -54,7 +55,7 @@ import {
   type SimEvent,
   type Snapshot,
 } from '@jorbe/shared';
-import { pickBotWeapon, solveBotShot } from './bot.js';
+import { pickBotWeapon, shouldRaiseShield, solveBotShot } from './bot.js';
 
 export interface MatchPlayerSeed {
   id: string;
@@ -252,9 +253,22 @@ export class MatchEngine {
       const timeUp = this.phaseElapsedMs >= this.phaseDurationMs;
       const allReadyElapsed =
         this.allReadySince !== null && this.phaseElapsedMs - this.allReadySince >= EARLY_RESOLVE_GRACE_MS;
-      // Todo mundo travou o tiro: nao faz sentido esperar o resto do timer.
-      // A folga curta e so pra nao cortar seco assim que o ultimo trava.
-      if (timeUp || allReadyElapsed) this.beginResolve();
+
+      if (timeUp) {
+        // O timer estourou: ninguem mais espera, mas nenhum Jorbot pode
+        // ficar sem atirar so porque demorou demais a decidir -- forca o
+        // tiro dele agora, antes de resolver.
+        for (const [botId, plan] of this.botPlans) {
+          const bot = this.players.get(botId);
+          if (bot && bot.char.alive && !plan.fired) this.fireBotShot(botId, plan);
+        }
+        this.beginResolve();
+      } else if (allReadyElapsed) {
+        // Todo mundo (gente) travou o tiro: so resolve quando os Jorbots
+        // tambem ja tiverem mirado -- senao o turno deles simplesmente
+        // sumia sempre que a galera terminava rapido demais.
+        if (this.allBotsFired()) this.beginResolve();
+      }
       return;
     }
 
@@ -327,9 +341,33 @@ export class MatchEngine {
     this.sink.toAll('roundReady', { ready });
 
     if (humans.length > 0 && ready.length === humans.length) {
-      if (this.allReadySince === null) this.allReadySince = this.phaseElapsedMs;
+      if (this.allReadySince === null) {
+        this.allReadySince = this.phaseElapsedMs;
+        // A galera terminou -- nao faz sentido deixar um Jorbot que ainda ia
+        // esperar quase ate o fim do timer segurar a rodada por mais tempo
+        // do que a propria folga de resolucao antecipada.
+        this.hurryPendingBots();
+      }
     } else {
       this.allReadySince = null;
+    }
+  }
+
+  /** Retorna true so quando todo Jorbot vivo ja atirou (ou passou a vez porque o alvo morreu). */
+  private allBotsFired(): boolean {
+    for (const [botId, plan] of this.botPlans) {
+      const bot = this.players.get(botId);
+      if (bot && bot.char.alive && !plan.fired) return false;
+    }
+    return true;
+  }
+
+  /** Antecipa o tiro de qualquer Jorbot que ainda nao atirou, pra nao segurar a rodada. */
+  private hurryPendingBots(): void {
+    for (const plan of this.botPlans.values()) {
+      if (plan.fired) continue;
+      const soon = this.phaseElapsedMs + this.botRng.range(200, 700);
+      if (plan.fireAtMs > soon) plan.fireAtMs = soon;
     }
   }
 
@@ -563,11 +601,12 @@ export class MatchEngine {
       const target = targets.length > 0 ? this.botRng.pick(targets) : null;
 
       const walkDir = this.botRng.pick([-1, 0, 1] as const);
-      const walkUntilMs = this.botRng.range(400, Math.min(2600, this.phaseDurationMs * 0.4));
-      // Atira numa janela do meio da rodada — nunca cedo demais (fica robotico
-      // atirar instantaneamente) nem tarde demais (precisa de folga antes do fim).
-      const earliest = walkUntilMs + 300;
-      const latest = Math.max(earliest + 200, this.phaseDurationMs - 1200);
+      const walkUntilMs = this.botRng.range(300, Math.min(1600, this.phaseDurationMs * 0.3));
+      // Atira logo depois de andar um pouco — nunca cedo demais (fica robotico
+      // atirar instantaneamente) nem tarde demais (senao vira o jogador esperando
+      // o bot decidir, que era exatamente a reclamacao original).
+      const earliest = walkUntilMs + 250;
+      const latest = Math.max(earliest + 200, Math.min(earliest + 3000, this.phaseDurationMs - 1500));
       const fireAtMs = this.botRng.range(earliest, latest);
 
       this.botPlans.set(bot.id, {
@@ -580,7 +619,7 @@ export class MatchEngine {
     }
   }
 
-  /** Aplica o roteiro dos bots a cada tick: anda um pouco, depois mira e atira uma vez. */
+  /** Aplica o roteiro dos bots a cada tick: anda um pouco (com cuidado pra nao se afogar), depois mira e atira uma vez. */
   private driveBots(dtMs: number): void {
     if (this.botPlans.size === 0) return;
 
@@ -589,21 +628,68 @@ export class MatchEngine {
       if (!bot || !bot.char.alive) continue;
 
       if (this.phaseElapsedMs < plan.walkUntilMs) {
-        bot.input = { left: plan.walkDir < 0, right: plan.walkDir > 0, jump: false };
+        const dir = plan.walkDir !== 0 && this.isWalkAheadSafe(bot.char.x, bot.char.y, plan.walkDir) ? plan.walkDir : 0;
+        bot.input = { left: dir < 0, right: dir > 0, jump: false };
       } else if (bot.input.left || bot.input.right) {
         bot.input = { ...NO_INPUT };
       }
 
       if (plan.fired || this.phaseElapsedMs < plan.fireAtMs) continue;
-      plan.fired = true;
-
-      const target = plan.targetId ? this.players.get(plan.targetId) : null;
-      if (!target || !target.char.alive) continue; // alvo morreu antes da hora — passa a vez.
-
-      const weapon = pickBotWeapon(bot.ammo, this.botRng);
-      const shot = solveBotShot(bot.char.x, bot.char.y, target.char.x, target.char.y, this.wind, this.botRng);
-      this.applyAim(botId, { angle: shot.angle, power: shot.power, weaponId: weapon.id, fire: true, shield: false });
+      this.fireBotShot(botId, plan);
     }
+  }
+
+  /**
+   * Um Jorbot que anda sem enxergar o mapa cai n'agua ou despenha o tempo
+   * todo -- olha um passo a frente antes de continuar andando naquela
+   * direcao: sem chao ali (buraco/fora do mapa), agua bem na frente, ou um
+   * degrau fundo demais (despenhadeiro) fazem o bot simplesmente parar em
+   * vez de continuar cego.
+   */
+  private isWalkAheadSafe(x: number, y: number, dir: -1 | 1): boolean {
+    const lookaheadX = Math.round(x + dir * JORBE_WIDTH * 1.4);
+    if (lookaheadX < 4 || lookaheadX > this.terrain.width - 4) return false;
+    const groundY = groundBelowSpan(this.terrain, lookaheadX, JORBE_WIDTH);
+    if (groundY >= this.terrain.height - 30) return false;
+    if (this.terrain.at(lookaheadX, groundY + 2) === Mat.LIQUID) return false;
+    if (groundY - y > JORBE_HEIGHT * 2.5) return false;
+    return true;
+  }
+
+  /** Executa o tiro planejado de um Jorbot agora mesmo (chamado no horario normal ou forcado por timeout/prontidao). */
+  private fireBotShot(botId: string, plan: BotPlan): void {
+    plan.fired = true;
+    const bot = this.players.get(botId);
+    if (!bot || !bot.char.alive) return;
+
+    const target = plan.targetId ? this.players.get(plan.targetId) : null;
+    if (!target || !target.char.alive) return; // alvo morreu antes da hora — passa a vez.
+
+    const weapon = pickBotWeapon(bot.ammo, this.botRng);
+    const shot = solveBotShot(
+      this.terrain,
+      bot.char.x,
+      bot.char.y,
+      target.char.x,
+      target.char.y,
+      this.wind,
+      weapon.windFactor,
+      this.botRng,
+    );
+
+    // Defende com escudo quando faz sentido -- nao abre mao do ataque, os
+    // dois acontecem no mesmo turno (aim.shield e independente da arma).
+    const shieldAmmo = bot.ammo.escudo;
+    const canShield = shieldAmmo === null || (shieldAmmo !== undefined && shieldAmmo > 0);
+    const wantsShield = canShield && shouldRaiseShield(bot.char.hp, JORBE_MAX_HP, this.botRng);
+
+    this.applyAim(botId, {
+      angle: shot.angle,
+      power: shot.power,
+      weaponId: weapon.id,
+      fire: true,
+      shield: wantsShield,
+    });
   }
 
   // -------------------------------------------------------------------------

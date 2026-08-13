@@ -440,7 +440,7 @@ test('sem todos prontos, a rodada espera o timer normal', () => {
   assert.equal(sink.eventsOf('roundResolve').length, 1, 'o timer normal ainda precisa resolver no fim');
 });
 
-test('bots nunca travam o tiro, e nao podem bloquear a resolucao antecipada', () => {
+test('bots nao travam o tiro (nao aparecem como "prontos"), mas sempre atiram antes da rodada resolver', () => {
   const sink = new RecordingSink();
   const engine = new MatchEngine(
     'fabrica',
@@ -454,11 +454,14 @@ test('bots nunca travam o tiro, e nao podem bloquear a resolucao antecipada', ()
   engine.start();
 
   engine.applyAim('humano', { angle: 45, power: 60, weaponId: 'tampinha', fire: true });
-  advance(engine, (EARLY_RESOLVE_GRACE_MS / 1000) + 0.3);
+  // A resolucao antecipada exige so o humano pronto (bot nao entra na lista de
+  // prontidao), mas precisa esperar o Jorbot atirar de verdade antes de
+  // resolver -- senao o turno dele sumia toda vez que a galera terminava rapido.
+  advance(engine, (EARLY_RESOLVE_GRACE_MS / 1000) + 0.6);
 
   const plans = sink.eventsOf('roundResolve') as ResolutionPlan[];
-  assert.equal(plans.length, 1, 'o bot nunca mira — exigir isso dele travaria o jogo pra sempre');
-  assert.equal(plans[0].shots.length, 1, 'so o humano atirou');
+  assert.equal(plans.length, 1, 'a rodada precisa ter resolvido (nao pode travar esperando o bot pra sempre)');
+  assert.equal(plans[0].shots.length, 2, 'humano E bot precisam ter atirado');
 });
 
 test('cancelar (fire:false) tira da lista e adia a resolucao', () => {
